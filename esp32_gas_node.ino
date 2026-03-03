@@ -25,11 +25,12 @@ const int LED_BUILTIN_PIN = 2; // Onboard LED
 const int BUZZER_PIN = 25;     // Optional buzzer
 const int BUZZER_CHANNEL = 0;  // LEDC channel for buzzer (ESP32)
 
-// ── Thresholds ── (calibrated: clean-air baseline ~815 ADC)
-// MQ-2 reads HIGH even in clean air — smoke pushes ADC even higher.
-// Adjust WARN/ALERT after sensor has fully warmed up (5 min).
-const int GAS_WARN_THRESHOLD = 880;  // baseline + ~65
-const int GAS_ALERT_THRESHOLD = 920; // baseline + ~105 = definite gas/smoke
+// ── Thresholds ── (auto-calibrated at startup — see calibrateBaseline())
+// MQ-2 sensor baseline varies per unit — we measure it during warmup.
+int GAS_BASELINE      = 0;   // set by calibrateBaseline()
+const int GAS_DELTA_WARN  = 65;  // ADC rise above baseline = warning
+const int GAS_DELTA_ALERT = 105; // ADC rise above baseline = gas leak
+const int GAS_SCALE_RANGE = 200; // delta range mapped to 0–1023 for dashboard
 
 // ── Timing ──
 const unsigned long PUBLISH_INTERVAL = 2000; // ms
@@ -54,8 +55,33 @@ void setup() {
   mqttClient.setKeepAlive(60);
   mqttClient.setSocketTimeout(10);
 
+  // Calibrate baseline BEFORE connecting MQTT so first publish is accurate
+  calibrateBaseline();
+
   connectMQTT();
   Serial.println("[FireWatch] Gas node ready.");
+}
+
+// ── Baseline auto-calibration ─────────────────────────────────────
+void calibrateBaseline() {
+  Serial.println("[GAS] Calibrating baseline — sensor warming up (30s). Keep area clear of gas/smoke!");
+  // Blink slowly during calibration
+  long sum = 0;
+  const int SAMPLES = 60;  // one sample every 500ms = 30 seconds
+  for (int i = 0; i < SAMPLES; i++) {
+    sum += analogRead(GAS_SENSOR_PIN);
+    digitalWrite(LED_BUILTIN_PIN, i % 2);
+    Serial.printf("[GAS] Calibration %d/%d  raw=%d\n", i + 1, SAMPLES, (int)analogRead(GAS_SENSOR_PIN));
+    delay(500);
+  }
+  GAS_BASELINE = sum / SAMPLES;
+  // Add a small safety margin so slight sensor drift doesn’t cause false alerts
+  GAS_BASELINE += 10;
+  Serial.printf("[GAS] Baseline set to %d  warn>%d  alert>%d\n",
+                GAS_BASELINE,
+                GAS_BASELINE + GAS_DELTA_WARN,
+                GAS_BASELINE + GAS_DELTA_ALERT);
+  digitalWrite(LED_BUILTIN_PIN, LOW);
 }
 
 void loop() {
@@ -84,14 +110,20 @@ void readAndPublishGas() {
   }
   int adcValue = sum / 5;
 
-  Serial.printf("[GAS] ADC Value: %d\n", adcValue);
+  // Normalize 12-bit ADC to 0-1023 dashboard scale.
+  // Subtract clean-air baseline so safe air = ~0, gas leak = 300-1023.
+  int delta = constrain(adcValue - GAS_BASELINE, 0, GAS_SCALE_RANGE);
+  int normalizedValue = map(delta, 0, GAS_SCALE_RANGE, 0, 1023);
+
+  Serial.printf("[GAS] raw=%d  baseline=%d  delta=%d  normalized=%d\n",
+                adcValue, GAS_BASELINE, delta, normalizedValue);
 
   // Build JSON payload
   char payload[128];
   const char *statusStr;
   bool isAlert = false;
 
-  if (adcValue > GAS_ALERT_THRESHOLD) {
+  if (adcValue > GAS_BASELINE + GAS_DELTA_ALERT) {
     statusStr = "leak";
     isAlert = true;
     // Alert: blink fast + buzzer
@@ -103,7 +135,7 @@ void readAndPublishGas() {
       ledcWriteTone(BUZZER_PIN, 0); // silent
       delay(100);
     }
-  } else if (adcValue > GAS_WARN_THRESHOLD) {
+  } else if (adcValue > GAS_BASELINE + GAS_DELTA_WARN) {
     statusStr = "warning";
     digitalWrite(LED_BUILTIN_PIN, HIGH);
   } else {
@@ -113,7 +145,8 @@ void readAndPublishGas() {
   }
 
   snprintf(payload, sizeof(payload),
-           "{\"value\":%d,\"status\":\"%s\",\"alert\":%s}", adcValue, statusStr,
+           "{\"value\":%d,\"raw\":%d,\"status\":\"%s\",\"alert\":%s}",
+           normalizedValue, adcValue, statusStr,
            isAlert ? "true" : "false");
 
   if (mqttClient.publish(MQTT_TOPIC, payload, false)) {

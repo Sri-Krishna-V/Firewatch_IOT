@@ -1406,7 +1406,9 @@
     // ─────────────────────────────────────────────
 
     const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
-    const TOPICS = ['fw2352/gas', 'fw2352/temp', 'fw2352/motion'];
+    const TOPICS = ['fw2352/gas', 'fw2352/temp', 'fw2352/motion', 'fw2352/status'];
+    const CMD_MOTION_TOPIC = 'fw2352/cmd/motion';  // arm / disarm Pico W
+    const CONTROL_TOPIC   = 'fw2352/control';       // reset signal to ESP32 / ESP8266
 
     // ── Telegram config (persisted in localStorage)
     let tgConfig = JSON.parse(localStorage.getItem('fw_tg_config') || 'null') || { token: '', chatId: '', location: 'FireWatch Building' };
@@ -1498,28 +1500,34 @@
       if (topic === 'fw2352/gas') handleGas(value, raw);
       else if (topic === 'fw2352/temp') handleTemp(value, raw);
       else if (topic === 'fw2352/motion') handleMotion(value, raw);
+      else if (topic === 'fw2352/status') handleStatus(value, raw);
 
       checkGlobalAlert();
     }
 
     function handleGas(value, raw) {
       let numVal = 0;
+      let forceAlert = false;
+      let forceStatus = null;
       if (typeof value === 'number') {
         numVal = value;
       } else if (typeof value === 'string') {
         const lower = value.toLowerCase();
-        if (['leak', 'alert', '1', 'true'].includes(lower)) numVal = 850;
+        if (['leak', 'alert', '1', 'true'].includes(lower)) { numVal = 850; forceAlert = true; }
         else if (['safe', '0', 'false'].includes(lower)) numVal = 80;
         else numVal = parseFloat(value) || 0;
       } else if (typeof value === 'object') {
         numVal = value.value || value.ppm || value.adc || 0;
+        // Trust the ESP32's own alert decision — avoids threshold mismatch bugs
+        if (value.alert === true)  forceAlert = true;
+        if (value.alert === false) forceStatus = 'safe';
       }
 
       let level, statusText, alertFlag = false;
-      if (numVal > 400) {
+      if (forceAlert || numVal > 400) {
         level = 'danger'; statusText = '⚠ GAS LEAK DETECTED!'; alertFlag = true;
         if (!state.gas.alert) { state.gasAlerts++; $('stat-gas-alerts').textContent = state.gasAlerts; $('stat-gas-alerts').className = 'stat-value alert'; }
-      } else if (numVal > 200) {
+      } else if (!forceAlert && forceStatus !== 'safe' && numVal > 200) {
         level = 'warn'; statusText = '⚡ WARNING: Elevated Gas';
       } else {
         level = 'safe'; statusText = '✔ SAFE — No Gas Detected';
@@ -1555,10 +1563,10 @@
       else if (typeof value === 'object') tempVal = value.temperature || value.temp || value.value || 0;
 
       let level, statusText, alertFlag = false;
-      if (tempVal >= 48) {
+      if (tempVal >= 45) {
         level = 'danger'; statusText = '🔥 FIRE ALERT! CRITICAL TEMP'; alertFlag = true;
         if (!state.temp.alert) { state.tempAlerts++; $('stat-temp-alerts').textContent = state.tempAlerts; $('stat-temp-alerts').className = 'stat-value alert'; }
-      } else if (tempVal >= 42) {
+      } else if (tempVal >= 38) {
         level = 'danger'; statusText = '⚠ HIGH TEMP WARNING'; alertFlag = true;
       } else if (tempVal >= 35) {
         level = 'warn'; statusText = '⚡ ELEVATED TEMPERATURE';
@@ -1590,6 +1598,32 @@
       addLog('fw2352/temp', `${tempVal.toFixed(1)}°C — ${statusText}`, level);
     }
 
+    // ── Node online/offline status ─────────────────────────────────────
+    function handleStatus(value, raw) {
+      if (typeof value !== 'object' || !value.node) return;
+      const node = value.node;       // e.g. "esp32_gas", "esp8266_temp", "picow_motion"
+      const online = value.status === 'online';
+      const armed  = value.armed;    // may be undefined for non-Pico nodes
+      const label  = online ? '\u25cf ONLINE' : '\u25cb OFFLINE';
+      const color  = online ? 'var(--safe)' : 'var(--danger)';
+
+      // Map node name to a status indicator element if it exists in the HTML
+      const nodeMap = {
+        'esp32_gas':     'node-status-gas',
+        'esp8266_temp':  'node-status-temp',
+        'picow_motion':  'node-status-motion'
+      };
+      const elId = nodeMap[node];
+      if (elId) {
+        const el = $(elId);
+        if (el) {
+          el.textContent = armed !== undefined ? (online ? (armed ? '\u25cf ARMED' : '\u25cb DISARMED') : '\u25cb OFFLINE') : label;
+          el.style.color = color;
+        }
+      }
+      addLog('fw2352/status', `${node} is ${online ? 'ONLINE' : 'OFFLINE'}${armed !== undefined ? '  armed=' + armed : ''}`, online ? 'safe' : 'warn');
+    }
+
     function handleMotion(value, raw) {
       let detected = false;
       if (typeof value === 'boolean') detected = value;
@@ -1601,7 +1635,12 @@
         detected = !!(value.motion || value.detected || value.value);
       }
 
-      if (detected) state.motion.count++;
+      // Use count from payload if available (survives Pico W reboots and page refreshes)
+      if (typeof value === 'object' && value.count != null) {
+        state.motion.count = value.count;
+      } else if (detected) {
+        state.motion.count++;
+      }
       state.motion.detected = detected;
       $('stat-motion-events').textContent = state.motion.count;
       $('motion-count').textContent = state.motion.count;
@@ -1858,9 +1897,15 @@ _Connection to FireWatch IoT confirmed._`;
       ['led-gas', 'led-temp', 'led-motion'].forEach(id => setLed(id, 'safe'));
       $('alert-banner').classList.remove('visible');
       addLog('SYSTEM', '🔕 Alert acknowledged by operator — monitoring continues', 'warn');
-      // Publish MQTT reset signal so ESP32 can respond
       if (client && state.connected) {
-        client.publish('fw2352/control', JSON.stringify({ action: 'reset', time: Date.now() }), { qos: 0 });
+        // fw2352/control  → ESP32 & ESP8266 can subscribe to silence buzzer/LED
+        client.publish(CONTROL_TOPIC, JSON.stringify({ action: 'reset', time: Date.now() }), { qos: 0 });
+        // fw2352/cmd/motion → Pico W: disarm then re-arm so its LED resets
+        client.publish(CMD_MOTION_TOPIC, JSON.stringify({ cmd: 'disarm' }), { qos: 1 });
+        setTimeout(() => {
+          client.publish(CMD_MOTION_TOPIC, JSON.stringify({ cmd: 'arm' }), { qos: 1 });
+          addLog('SYSTEM', 'Pico W re-armed after acknowledge', 'safe');
+        }, 1500);
       }
     }
 
