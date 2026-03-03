@@ -36,6 +36,23 @@ const int GAS_SCALE_RANGE = 200; // delta range mapped to 0–1023 for dashboard
 const unsigned long PUBLISH_INTERVAL = 2000; // ms
 unsigned long lastPublish = 0;
 
+// ── Edge Computation: Ring-buffer Moving Average ─────────────────────────
+const int MA_SIZE = 10;                 // slots — 10 × 2 s = 20 s window
+uint16_t gasBuf[MA_SIZE] = {0};
+int gaBufIdx  = 0;
+bool gaBufFull = false;
+
+// ── Edge Computation: Rate-of-Change ─────────────────────────────────────
+int gaPrevSmoothed = 0;                 // MA value from previous publish cycle
+const int ROC_RISING_THRESHOLD = 20;   // ADC units per cycle ⇒ considered rising
+
+// ── Edge Computation: Delta-based Conditional Publish ────────────────────
+int          gaLastPublishedValue  = -999;
+const char  *gaLastPublishedStatus = "";
+unsigned long gaLastForcedPublish  = 0;
+const unsigned long FORCED_PUB_INTERVAL = 30000; // 30 s heartbeat
+const int    DELTA_THRESHOLD = 5;      // suppress if norm value drifts ≤ this
+
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
@@ -102,7 +119,7 @@ void loop() {
 }
 
 void readAndPublishGas() {
-  // Average 5 readings for stability
+  // ── Step 1: Read ADC + ring-buffer moving average ─────────────────────
   long sum = 0;
   for (int i = 0; i < 5; i++) {
     sum += analogRead(GAS_SENSOR_PIN);
@@ -110,44 +127,79 @@ void readAndPublishGas() {
   }
   int adcValue = sum / 5;
 
-  // Normalize 12-bit ADC to 0-1023 dashboard scale.
-  // Subtract clean-air baseline so safe air = ~0, gas leak = 300-1023.
-  int delta = constrain(adcValue - GAS_BASELINE, 0, GAS_SCALE_RANGE);
+  // Fill ring buffer one slot per publish cycle
+  gasBuf[gaBufIdx] = (uint16_t)adcValue;
+  gaBufIdx = (gaBufIdx + 1) % MA_SIZE;
+  if (gaBufIdx == 0) gaBufFull = true;
+
+  int filledSlots = gaBufFull ? MA_SIZE : gaBufIdx;
+  long bufSum = 0;
+  for (int i = 0; i < filledSlots; i++) bufSum += gasBuf[i];
+  int smoothed = (int)(bufSum / filledSlots);
+
+  // ── Step 2: Normalize + risk score (0–100) ────────────────────────────
+  int delta          = constrain(smoothed - GAS_BASELINE, 0, GAS_SCALE_RANGE);
   int normalizedValue = map(delta, 0, GAS_SCALE_RANGE, 0, 1023);
+  int riskScore      = (int)map(delta, 0, GAS_SCALE_RANGE, 0, 100);
 
-  Serial.printf("[GAS] raw=%d  baseline=%d  delta=%d  normalized=%d\n",
-                adcValue, GAS_BASELINE, delta, normalizedValue);
+  // ── Step 3: Rate-of-change (per publish cycle ~2 s) ──────────────────
+  int  rateOfChange = smoothed - gaPrevSmoothed;
+  bool rising       = (rateOfChange > ROC_RISING_THRESHOLD);
+  gaPrevSmoothed    = smoothed;
 
-  // Build JSON payload
-  char payload[128];
+  // ── Step 4: Status classification with early-warn on rising trend ─────
   const char *statusStr;
   bool isAlert = false;
 
-  if (adcValue > GAS_BASELINE + GAS_DELTA_ALERT) {
+  if (smoothed > GAS_BASELINE + GAS_DELTA_ALERT) {
     statusStr = "leak";
-    isAlert = true;
-    // Alert: blink fast + buzzer
+    isAlert   = true;
     for (int i = 0; i < 3; i++) {
       digitalWrite(LED_BUILTIN_PIN, HIGH);
-      ledcWriteTone(BUZZER_PIN, 2000); // 2kHz beep
+      ledcWriteTone(BUZZER_PIN, 2000);
       delay(100);
       digitalWrite(LED_BUILTIN_PIN, LOW);
-      ledcWriteTone(BUZZER_PIN, 0); // silent
+      ledcWriteTone(BUZZER_PIN, 0);
       delay(100);
     }
-  } else if (adcValue > GAS_BASELINE + GAS_DELTA_WARN) {
+  } else if (smoothed > GAS_BASELINE + GAS_DELTA_WARN || rising) {
+    // Rising fast below warn threshold → early-warn
     statusStr = "warning";
     digitalWrite(LED_BUILTIN_PIN, HIGH);
   } else {
     statusStr = "safe";
     digitalWrite(LED_BUILTIN_PIN, LOW);
-    ledcWriteTone(BUZZER_PIN, 0); // silence buzzer
+    ledcWriteTone(BUZZER_PIN, 0);
   }
 
+  // ── Step 5: Delta-based conditional publish ───────────────────────────
+  unsigned long now       = millis();
+  bool statusChanged      = (strcmp(statusStr, gaLastPublishedStatus) != 0);
+  bool valueDrifted       = (abs(normalizedValue - gaLastPublishedValue) > DELTA_THRESHOLD);
+  bool heartbeatDue       = (now - gaLastForcedPublish >= FORCED_PUB_INTERVAL);
+
+  Serial.printf("[GAS] raw=%d smooth=%d base=%d delta=%d norm=%d risk=%d roc=%+d %s\n",
+                adcValue, smoothed, GAS_BASELINE, delta, normalizedValue,
+                riskScore, rateOfChange, rising ? "RISING" : "");
+
+  if (!statusChanged && !valueDrifted && !heartbeatDue) {
+    Serial.println("[GAS] Suppressed — no significant change");
+    return;
+  }
+
+  gaLastPublishedValue  = normalizedValue;
+  gaLastPublishedStatus = statusStr;
+  gaLastForcedPublish   = now;
+
+  // ── Step 6: Build + publish JSON ─────────────────────────────────────
+  char payload[192];
   snprintf(payload, sizeof(payload),
-           "{\"value\":%d,\"raw\":%d,\"status\":\"%s\",\"alert\":%s}",
+           "{\"value\":%d,\"raw\":%d,\"status\":\"%s\","
+           "\"trend\":\"%s\",\"alert\":%s,\"risk\":%d}",
            normalizedValue, adcValue, statusStr,
-           isAlert ? "true" : "false");
+           rising ? "rising" : "stable",
+           isAlert ? "true" : "false",
+           riskScore);
 
   if (mqttClient.publish(MQTT_TOPIC, payload, false)) {
     Serial.printf("[GAS] Published → %s : %s\n", MQTT_TOPIC, payload);

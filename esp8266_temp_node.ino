@@ -43,8 +43,43 @@ const float TEMP_CRITICAL = 45.0; // Near DHT11 limit — treat as FIRE alert
 const unsigned long PUBLISH_INTERVAL = 3000;
 unsigned long lastPublish = 0;
 
+// ── Edge Computation: Exponential Moving Average (EMA) ────────────────────
+// α=0.3 gives ~3-cycle settling — appropriate for DHT11 slow sample rate
+const float EMA_ALPHA = 0.3f;
+float emaTemp     = NAN;   // NAN signals "not seeded yet"
+float emaHumidity = NAN;
+
+// ── Edge Computation: Rate-of-Change ─────────────────────────────────────
+float prevEmaTemp = NAN;
+const float ROC_RISING_THRESHOLD = 1.5f; // °C per 3 s cycle ⇒ rising fast
+
+// ── Edge Computation: Delta-based Conditional Publish ────────────────────
+float        lastPubTemp     = NAN;
+float        lastPubHumidity = NAN;
+const char  *lastPubStatus   = "";
+unsigned long lastForcedPub  = 0;
+const unsigned long FORCED_PUB_INTERVAL = 30000; // 30 s heartbeat
+const float TEMP_DELTA_THR = 0.5f;   // °C
+const float HUM_DELTA_THR  = 2.0f;   // %
+
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+
+// ── Heat Index (Rothfusz regression, NOAA) ───────────────────────────────
+// Returns apparent temperature (°C). Valid for T≥27°C and RH≥40%;
+// returns raw temperature below that range (sensor accurate enough there).
+float computeHeatIndex(float T, float RH) {
+  if (T < 27.0f || RH < 40.0f) return T;
+  return -8.78469475556f
+         + 1.61139411f   * T
+         + 2.33854883889f * RH
+         - 0.14611605f   * T  * RH
+         - 0.01230809050f * T  * T
+         - 0.01642482777f * RH * RH
+         + 0.00221732f   * T  * T  * RH
+         + 0.00072546f   * T  * RH * RH
+         - 0.00000358528f * T  * T  * RH * RH;
+}
 
 void setup() {
   Serial.begin(115200);
@@ -83,50 +118,94 @@ void loop() {
 }
 
 void readAndPublishTemp() {
-  float temp = dht.readTemperature(); // Celsius
-  float humidity = dht.readHumidity();
+  float rawTemp     = dht.readTemperature();
+  float rawHumidity = dht.readHumidity();
 
-  // Handle sensor read failure
-  if (isnan(temp) || isnan(humidity)) {
+  if (isnan(rawTemp) || isnan(rawHumidity)) {
     Serial.println("[TEMP] Sensor read failed — skipping publish");
     return;
   }
 
-  Serial.printf("[TEMP] Temperature: %.1f°C | Humidity: %.1f%%\n", temp,
-                humidity);
+  // ── Step 1: EMA smoothing ─────────────────────────────────────────────
+  if (isnan(emaTemp)) {
+    emaTemp     = rawTemp;       // seed on first valid read
+    emaHumidity = rawHumidity;
+  } else {
+    emaTemp     = EMA_ALPHA * rawTemp     + (1.0f - EMA_ALPHA) * emaTemp;
+    emaHumidity = EMA_ALPHA * rawHumidity + (1.0f - EMA_ALPHA) * emaHumidity;
+  }
 
-  // Determine status
+  // ── Step 2: Heat Index ────────────────────────────────────────────────
+  float heatIndex = computeHeatIndex(emaTemp, emaHumidity);
+
+  // ── Step 3: Rate-of-change ─────────────────────────────────────────
+  bool rising = false;
+  if (!isnan(prevEmaTemp)) {
+    rising = (emaTemp - prevEmaTemp) > ROC_RISING_THRESHOLD;
+  }
+  prevEmaTemp = emaTemp;
+
+  // ── Step 4: Status — use heat index + early-warn if rising ────────────
+  // When rising fast, bump the effective temperature up by 5°C so we
+  // escalate one severity tier earlier.
+  float effectiveTemp = rising ? (emaTemp + 5.0f) : emaTemp;
   const char *statusStr;
   bool alertFlag = false;
 
-  if (temp >= TEMP_CRITICAL) {
+  if (heatIndex >= TEMP_CRITICAL || effectiveTemp >= TEMP_CRITICAL) {
     statusStr = "critical";
     alertFlag = true;
-    // Rapid beep + blink
     for (int i = 0; i < 5; i++) {
-      digitalWrite(LED_PIN, LOW); // on
+      digitalWrite(LED_PIN, LOW);
       delay(80);
-      digitalWrite(LED_PIN, HIGH); // off
+      digitalWrite(LED_PIN, HIGH);
       delay(80);
     }
-  } else if (temp >= TEMP_WARN) {
+  } else if (heatIndex >= TEMP_WARN || effectiveTemp >= TEMP_WARN) {
     statusStr = "high";
     alertFlag = true;
-    digitalWrite(LED_PIN, LOW); // steady on
-  } else if (temp >= TEMP_ELEVATED) {
+    digitalWrite(LED_PIN, LOW);
+  } else if (emaTemp >= TEMP_ELEVATED) {
     statusStr = "elevated";
     digitalWrite(LED_PIN, LOW);
   } else {
     statusStr = "normal";
-    digitalWrite(LED_PIN, HIGH); // off
+    digitalWrite(LED_PIN, HIGH);
   }
 
-  // Build JSON
-  char payload[160];
-  snprintf(
-      payload, sizeof(payload),
-      "{\"temperature\":%.1f,\"humidity\":%.1f,\"status\":\"%s\",\"alert\":%s}",
-      temp, humidity, statusStr, alertFlag ? "true" : "false");
+  // ── Step 5: Risk score 0–100 based on heat index ─────────────────────
+  // 20°C = 0 risk, 80°C+ = 100 risk
+  int riskScore = (int)constrain((heatIndex - 20.0f) * 100.0f / 60.0f, 0.0f, 100.0f);
+
+  // ── Step 6: Delta-based conditional publish ───────────────────────────
+  unsigned long now = millis();
+  bool statusChanged = (strcmp(statusStr, lastPubStatus) != 0);
+  bool tempDrifted   = isnan(lastPubTemp)     || (fabs(emaTemp     - lastPubTemp)     > TEMP_DELTA_THR);
+  bool humDrifted    = isnan(lastPubHumidity) || (fabs(emaHumidity - lastPubHumidity) > HUM_DELTA_THR);
+  bool heartbeatDue  = (now - lastForcedPub >= FORCED_PUB_INTERVAL);
+
+  Serial.printf("[TEMP] raw=%.1f°C ema=%.1f°C hi=%.1f°C hum=%.1f%% %s status=%s risk=%d\n",
+                rawTemp, emaTemp, heatIndex, emaHumidity,
+                rising ? "RISING" : "", statusStr, riskScore);
+
+  if (!statusChanged && !tempDrifted && !humDrifted && !heartbeatDue) {
+    Serial.println("[TEMP] Suppressed — no significant change");
+    return;
+  }
+
+  lastPubTemp     = emaTemp;
+  lastPubHumidity = emaHumidity;
+  lastPubStatus   = statusStr;
+  lastForcedPub   = now;
+
+  // ── Step 7: Build + publish JSON ─────────────────────────────────────
+  char payload[200];
+  snprintf(payload, sizeof(payload),
+           "{\"temperature\":%.1f,\"humidity\":%.1f,\"heat_index\":%.1f,"
+           "\"status\":\"%s\",\"trend\":\"%s\",\"alert\":%s,\"risk\":%d}",
+           emaTemp, emaHumidity, heatIndex,
+           statusStr, rising ? "rising" : "stable",
+           alertFlag ? "true" : "false", riskScore);
 
   if (mqttClient.publish(MQTT_TOPIC, payload, false)) {
     Serial.printf("[TEMP] Published → %s : %s\n", MQTT_TOPIC, payload);
