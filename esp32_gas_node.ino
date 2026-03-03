@@ -25,9 +25,11 @@ const int LED_BUILTIN_PIN = 2; // Onboard LED
 const int BUZZER_PIN = 25;     // Optional buzzer
 const int BUZZER_CHANNEL = 0;  // LEDC channel for buzzer (ESP32)
 
-// ── Thresholds ──
-const int GAS_WARN_THRESHOLD = 200;
-const int GAS_ALERT_THRESHOLD = 400;
+// ── Thresholds ── (calibrated: clean-air baseline ~815 ADC)
+// MQ-2 reads HIGH even in clean air — smoke pushes ADC even higher.
+// Adjust WARN/ALERT after sensor has fully warmed up (5 min).
+const int GAS_WARN_THRESHOLD = 880;  // baseline + ~65
+const int GAS_ALERT_THRESHOLD = 920; // baseline + ~105 = definite gas/smoke
 
 // ── Timing ──
 const unsigned long PUBLISH_INTERVAL = 2000; // ms
