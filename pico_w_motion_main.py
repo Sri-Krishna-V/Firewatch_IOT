@@ -32,14 +32,16 @@ CMD_TOPIC = b"fw2352/cmd/motion"   # arm / disarm commands from dashboard
 # ── Pins ─────────────────────────────────────────
 PIR_PIN = 15    # GPIO15 — PIR signal output
 LED_PIN = "LED"  # Pico W onboard LED
+# GPIO14 — external LED (anode via resistor → GP14, cathode → GND)
+EXT_LED_PIN = 14
 
 pir = Pin(PIR_PIN, Pin.IN, Pin.PULL_DOWN)
 led = Pin(LED_PIN, Pin.OUT)
+ext_led = Pin(EXT_LED_PIN, Pin.OUT)
 
-# ── State ────────────────────────────────────────
-motion_count = 0
 last_motion = 0
 last_publish = 0
+motion_count = 0  # Initialize motion counter
 DEBOUNCE_MS = 500   # Ignore re-triggers within 500ms
 PUBLISH_INTERVAL = 2   # seconds (heartbeat even if no motion)
 
@@ -60,8 +62,9 @@ def log(level, msg):
     t = time.ticks_ms() // 1000
     print(f"[{t:6d}s][{level}] {msg}")
 
-
 # ── Status dump (paste this output when reporting an issue) ──────────────
+
+
 def dump_status():
     wlan = network.WLAN(network.STA_IF)
     log("STAT", "─" * 40)
@@ -78,7 +81,6 @@ def dump_status():
     log("STAT", f"Motion count   : {motion_count}")
     log("STAT", f"pending_motion : {pending_motion}")
     log("STAT", "─" * 40)
-
 
 # ── WiFi ─────────────────────────────────────────
 
@@ -133,7 +135,6 @@ def cmd_callback(topic, msg):
     except Exception as e:
         log("ERR", f"cmd_callback raised: {e}")
         sys.print_exception(e)
-
 
 # ── MQTT ─────────────────────────────────────────
 
@@ -229,6 +230,8 @@ def heartbeat():
 
 
 def main():
+    global pending_motion, motion_count
+
     log("BOOT", "═" * 44)
     log("BOOT", " FireWatch IoT — Pico W Motion Node")
     log("BOOT", f" MicroPython {sys.version}")
@@ -239,7 +242,7 @@ def main():
     log("BOOT", "═" * 44)
 
     led.off()
-    time.sleep(2)  # Brief settle
+    ext_led.off()  # ensure external LED starts off
 
     if not connect_wifi():
         log("FATAL", "No WiFi — check SSID/password then hard-reset the Pico")
@@ -271,7 +274,6 @@ def main():
 
     # Main loop: consume IRQ flags + keep-alive
     hb_counter = 0
-    global pending_motion, motion_count
     while True:
         try:
             time.sleep(PUBLISH_INTERVAL)
@@ -290,9 +292,11 @@ def main():
                         log("PIR",
                             f"*** MOTION DETECTED  event=#{motion_count} ***")
                         led.on()
+                        ext_led.on()   # external LED on
                     else:
                         log("PIR", "Motion ended — area clear")
                         led.off()
+                        ext_led.off()  # external LED off
                     publish_motion(detected, motion_count)
                 else:
                     pending_motion = None  # Clear event silently when disarmed
@@ -307,6 +311,7 @@ def main():
             publish_motion(False, motion_count)
             client.disconnect()
             led.off()
+            ext_led.off()
             break
         except Exception as e:
             log("ERR", f"Main loop exception: {e}")
@@ -324,6 +329,6 @@ if __name__ == "__main__":
     PRODUCTION = False
     warmup = 60 if PRODUCTION else 5
     log("BOOT",
-        f"Sensor warm-up ({warmup}s){'  [PRODUCTION]' if PRODUCTION else '  [TEST \u2014 set PRODUCTION=True when deploying]'}...")
+        f"Sensor warm-up ({warmup}s){'  [PRODUCTION]' if PRODUCTION else '  [TEST — set PRODUCTION=True when deploying]'}...")
     time.sleep(warmup)
     main()
