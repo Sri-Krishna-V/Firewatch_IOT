@@ -188,6 +188,112 @@
     gap: 20px;
   }
 
+  /* ── CONTROL PANEL ── */
+  .ctrl-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    border-radius: 12px;
+    padding: 22px 28px;
+    margin-bottom: 20px;
+  }
+
+  .ctrl-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border-dim);
+    padding-bottom: 14px;
+  }
+
+  .ctrl-panel-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 13px;
+    letter-spacing: 3px;
+    color: var(--accent-cyan);
+  }
+
+  .ctrl-note {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-left: auto;
+  }
+
+  .ctrl-sections {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+
+  @media (max-width: 700px) {
+    .ctrl-sections { grid-template-columns: 1fr; }
+  }
+
+  .ctrl-section-title {
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--text-secondary);
+    margin-bottom: 14px;
+  }
+
+  .ctrl-btns {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .ctrl-btn {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 1px;
+    padding: 9px 18px;
+    border-radius: 6px;
+    border: 1px solid var(--border-dim);
+    background: var(--bg-card2);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .ctrl-btn:hover {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    box-shadow: 0 0 10px rgba(0,212,255,0.15);
+  }
+
+  .ctrl-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .ctrl-btn.active-warn {
+    border-color: var(--warn);
+    color: var(--warn);
+    box-shadow: 0 0 8px rgba(255,204,0,0.2);
+  }
+
+  .ctrl-btn.active-danger {
+    border-color: var(--danger);
+    color: var(--danger);
+    box-shadow: 0 0 8px rgba(255,26,68,0.2);
+  }
+
+  .ctrl-btn.active-safe {
+    border-color: var(--safe);
+    color: var(--safe);
+    box-shadow: 0 0 8px rgba(0,255,136,0.2);
+  }
+
+  .ctrl-state {
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .ctrl-state span {
+    color: var(--accent-cyan);
+  }
+
   @media (max-width: 900px) {
     .grid-main { grid-template-columns: 1fr; }
     .grid-bottom { grid-template-columns: 1fr; }
@@ -777,6 +883,37 @@
 
   </div>
 
+  <!-- CONTROL PANEL -->
+  <div class="ctrl-panel">
+    <div class="ctrl-panel-header">
+      <div class="ctrl-panel-title">CONTROL PANEL</div>
+      <div class="ctrl-note">Commands publish instantly via MQTT → devices respond in real-time</div>
+    </div>
+    <div class="ctrl-sections">
+
+      <!-- ESP32 Buzzer -->
+      <div>
+        <div class="ctrl-section-title">ESP32 / GAS NODE — BUZZER</div>
+        <div class="ctrl-btns">
+          <button class="ctrl-btn" id="btn-silence" onclick="cmdSilenceBuzzer()">🔇 SILENCE BUZZER</button>
+          <button class="ctrl-btn" id="btn-enable-buzzer" onclick="cmdEnableBuzzer()">&#128266; ENABLE BUZZER</button>
+        </div>
+        <div class="ctrl-state">Status: <span id="buzzer-state">ENABLED</span></div>
+      </div>
+
+      <!-- Pico W Arm/Disarm -->
+      <div>
+        <div class="ctrl-section-title">PICO W / MOTION NODE — ARM/DISARM</div>
+        <div class="ctrl-btns">
+          <button class="ctrl-btn active-safe" id="btn-arm" onclick="cmdArm()">&#128737; ARM</button>
+          <button class="ctrl-btn" id="btn-disarm" onclick="cmdDisarm()">&#128274; DISARM</button>
+        </div>
+        <div class="ctrl-state">Status: <span id="arm-state">ARMED</span></div>
+      </div>
+
+    </div>
+  </div>
+
   <!-- BOTTOM GRID -->
   <div class="grid-bottom">
 
@@ -855,12 +992,61 @@ const state = {
   tempAlerts: 0,
   logCount: 0,
   startTime: Date.now(),
-  tempHistory: []
+  tempHistory: [],
+  // Control state
+  buzzerSilenced: false,
+  motionArmed: true
 };
 
 // ── DOM refs
 const $ = id => document.getElementById(id);
 let client;
+
+// ── Control Panel commands
+function publishCmd(topic, payload) {
+  if (!client || !client.connected) {
+    addLog('SYS', 'Cannot send command — not connected to broker', 'danger');
+    return;
+  }
+  client.publish(topic, JSON.stringify(payload), { qos: 1 });
+  addLog(topic, 'CMD → ' + JSON.stringify(payload), 'warn');
+}
+
+function cmdSilenceBuzzer() {
+  publishCmd('fw2352/cmd/esp32', { cmd: 'silence_buzzer' });
+  state.buzzerSilenced = true;
+  $('buzzer-state').textContent = 'SILENCED';
+  $('buzzer-state').style.color = 'var(--warn)';
+  $('btn-silence').classList.add('active-warn');
+  $('btn-enable-buzzer').classList.remove('active-safe');
+}
+
+function cmdEnableBuzzer() {
+  publishCmd('fw2352/cmd/esp32', { cmd: 'enable_buzzer' });
+  state.buzzerSilenced = false;
+  $('buzzer-state').textContent = 'ENABLED';
+  $('buzzer-state').style.color = 'var(--safe)';
+  $('btn-enable-buzzer').classList.add('active-safe');
+  $('btn-silence').classList.remove('active-warn');
+}
+
+function cmdArm() {
+  publishCmd('fw2352/cmd/pico', { cmd: 'arm' });
+  state.motionArmed = true;
+  $('arm-state').textContent = 'ARMED';
+  $('arm-state').style.color = 'var(--safe)';
+  $('btn-arm').classList.add('active-safe');
+  $('btn-disarm').classList.remove('active-danger');
+}
+
+function cmdDisarm() {
+  publishCmd('fw2352/cmd/pico', { cmd: 'disarm' });
+  state.motionArmed = false;
+  $('arm-state').textContent = 'DISARMED';
+  $('arm-state').style.color = 'var(--warn)';
+  $('btn-disarm').classList.add('active-danger');
+  $('btn-arm').classList.remove('active-safe');
+}
 
 // ── MQTT Connect
 function connectMQTT() {
