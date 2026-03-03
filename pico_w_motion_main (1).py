@@ -14,7 +14,7 @@
 import network
 import time
 import ujson
-from machine import Pin, Timer
+from machine import Pin
 from umqtt.simple import MQTTClient
 
 # ── Config ──────────────────────────────────────
@@ -22,9 +22,10 @@ WIFI_SSID = "YOUR_WIFI_SSID"
 WIFI_PASS = "YOUR_WIFI_PASSWORD"
 MQTT_BROKER = b"broker.hivemq.com"
 MQTT_PORT = 1883
-MQTT_TOPIC = b"fire/motion"
-MQTT_CLIENT = b"picow_motion_node_001"
-STATUS_TOPIC = b"fire/status"
+# Unique prefix avoids topic collision on public broker
+MQTT_TOPIC = b"fw2352/motion"
+MQTT_CLIENT = b"fw2352_picow_motion"
+STATUS_TOPIC = b"fw2352/status"
 
 # ── Pins ─────────────────────────────────────────
 PIR_PIN = 15    # GPIO15 — PIR signal output

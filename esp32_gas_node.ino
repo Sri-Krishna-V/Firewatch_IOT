@@ -15,13 +15,14 @@ const char* WIFI_SSID     = "YOUR_WIFI_SSID";
 const char* WIFI_PASS     = "YOUR_WIFI_PASSWORD";
 const char* MQTT_BROKER   = "broker.hivemq.com";
 const int   MQTT_PORT     = 1883;
-const char* MQTT_TOPIC    = "fire/gas";
-const char* MQTT_CLIENT   = "esp32_gas_node_001";
+const char* MQTT_TOPIC    = "fw2352/gas";       // Unique prefix avoids topic collision on public broker
+const char* MQTT_CLIENT   = "fw2352_esp32_gas";
 
 // ── Pins ──
 const int GAS_SENSOR_PIN  = 34;   // ADC1_CH6 — analog read
 const int LED_BUILTIN_PIN = 2;    // Onboard LED
 const int BUZZER_PIN      = 25;   // Optional buzzer
+const int BUZZER_CHANNEL  = 0;    // LEDC channel for buzzer (ESP32)
 
 // ── Thresholds ──
 const int GAS_WARN_THRESHOLD  = 200;
@@ -39,9 +40,9 @@ void setup() {
   Serial.println("\n[FireWatch] ESP32 Gas Detection Node Starting...");
 
   pinMode(LED_BUILTIN_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(LED_BUILTIN_PIN, LOW);
-  noTone(BUZZER_PIN);
+  // Set up LEDC for buzzer (ESP32 PWM — replaces tone())
+  ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
+  ledcWriteTone(BUZZER_CHANNEL, 0); // silent
 
   connectWiFi();
 
@@ -92,9 +93,10 @@ void readAndPublishGas() {
     // Alert: blink fast + buzzer
     for (int i = 0; i < 3; i++) {
       digitalWrite(LED_BUILTIN_PIN, HIGH);
-      tone(BUZZER_PIN, 2000, 100);
+      ledcWriteTone(BUZZER_CHANNEL, 2000); // 2kHz beep
       delay(100);
       digitalWrite(LED_BUILTIN_PIN, LOW);
+      ledcWriteTone(BUZZER_CHANNEL, 0);    // silent
       delay(100);
     }
   } else if (adcValue > GAS_WARN_THRESHOLD) {
@@ -103,7 +105,7 @@ void readAndPublishGas() {
   } else {
     statusStr = "safe";
     digitalWrite(LED_BUILTIN_PIN, LOW);
-    noTone(BUZZER_PIN);
+    ledcWriteTone(BUZZER_CHANNEL, 0); // silence buzzer
   }
 
   snprintf(payload, sizeof(payload),
@@ -140,7 +142,7 @@ void connectWiFi() {
 
 void connectMQTT() {
   // Set Last Will Testament so broker publishes offline status on unexpected disconnect
-  mqttClient.setWill("fire/status", "{\"node\":\"esp32_gas\",\"status\":\"offline\"}", false, 0);
+  mqttClient.setWill("fw2352/status", "{\"node\":\"esp32_gas\",\"status\":\"offline\"}", false, 0);
 
   int attempts = 0;
   while (!mqttClient.connected() && attempts < 5) {
@@ -148,7 +150,7 @@ void connectMQTT() {
     if (mqttClient.connect(MQTT_CLIENT)) {
       Serial.println("[MQTT] Connected to HiveMQ!");
       // Publish online status
-      mqttClient.publish("fire/status", "{\"node\":\"esp32_gas\",\"status\":\"online\"}");
+      mqttClient.publish("fw2352/status", "{\"node\":\"esp32_gas\",\"status\":\"online\"}");
     } else {
       Serial.printf("[MQTT] Failed, rc=%d — retry in 3s\n", mqttClient.state());
       delay(3000);

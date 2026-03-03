@@ -21,12 +21,13 @@ const char* WIFI_SSID   = "YOUR_WIFI_SSID";
 const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
 const char* MQTT_BROKER = "broker.hivemq.com";
 const int   MQTT_PORT   = 1883;
-const char* MQTT_TOPIC  = "fire/temp";
-const char* MQTT_CLIENT = "esp8266_temp_node_001";
+const char* MQTT_TOPIC  = "fw2352/temp";       // Unique prefix avoids topic collision on public broker
+const char* MQTT_CLIENT = "fw2352_esp8266_temp";
 
 // ── DHT Sensor ──
 #define DHTPIN   4        // GPIO4 = D2 on NodeMCU
-#define DHTTYPE  DHT11    // Change to DHT22 for higher accuracy
+#define DHTTYPE  DHT22    // DHT22 measures up to 80°C — required for fire detection
+                          // DHT11 only goes to 50°C, so TEMP_CRITICAL (60°C) would never trigger
 DHT dht(DHTPIN, DHTTYPE);
 
 // ── Pins ──
@@ -151,14 +152,14 @@ void connectWiFi() {
 
 void connectMQTT() {
   // Set Last Will Testament so broker publishes offline status on unexpected disconnect
-  mqttClient.setWill("fire/status", "{\"node\":\"esp8266_temp\",\"status\":\"offline\"}", false, 0);
+  mqttClient.setWill("fw2352/status", "{\"node\":\"esp8266_temp\",\"status\":\"offline\"}", false, 0);
 
   int attempts = 0;
   while (!mqttClient.connected() && attempts < 5) {
     Serial.printf("[MQTT] Connecting as %s...\n", MQTT_CLIENT);
     if (mqttClient.connect(MQTT_CLIENT)) {
       Serial.println("[MQTT] Connected to HiveMQ!");
-      mqttClient.publish("fire/status", "{\"node\":\"esp8266_temp\",\"status\":\"online\"}");
+      mqttClient.publish("fw2352/status", "{\"node\":\"esp8266_temp\",\"status\":\"online\"}");
     } else {
       Serial.printf("[MQTT] Failed rc=%d — retry in 3s\n", mqttClient.state());
       delay(3000);

@@ -649,7 +649,7 @@
         <div>
           <div class="card-node">ESP32 Node · MQ-2/MQ-5 Sensor</div>
           <div class="card-title">GAS DETECTION</div>
-          <div class="card-topic">fire/gas</div>
+          <div class="card-topic">fw2352/gas</div>
         </div>
         <div class="led-indicator safe" id="led-gas"></div>
       </div>
@@ -702,7 +702,7 @@
         <div>
           <div class="card-node">ESP8266 Node · DHT11/DS18B20</div>
           <div class="card-title">TEMPERATURE</div>
-          <div class="card-topic">fire/temp</div>
+          <div class="card-topic">fw2352/temp</div>
         </div>
         <div class="led-indicator safe" id="led-temp"></div>
       </div>
@@ -751,7 +751,7 @@
         <div>
           <div class="card-node">Raspberry Pi Pico W · PIR HC-SR501</div>
           <div class="card-title">MOTION DETECTION</div>
-          <div class="card-topic">fire/motion</div>
+          <div class="card-topic">fw2352/motion</div>
         </div>
         <div class="led-indicator safe" id="led-motion"></div>
       </div>
@@ -829,7 +829,7 @@
     <div class="broker-info">
       <span>MQTT: broker.hivemq.com:8884 (WSS)</span>
       <span>QoS: 1</span>
-      <span>TOPICS: fire/gas · fire/temp · fire/motion</span>
+      <span>TOPICS: fw2352/gas · fw2352/temp · fw2352/motion</span>
     </div>
     <span>FIREWATCH IoT v1.0 — REAL-TIME FIRE SAFETY</span>
   </footer>
@@ -842,7 +842,7 @@
 // ─────────────────────────────────────────────
 
 const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
-const TOPICS = ['fire/gas', 'fire/temp', 'fire/motion'];
+const TOPICS = ['fw2352/gas', 'fw2352/temp', 'fw2352/motion'];
 
 // State
 const state = {
@@ -925,9 +925,9 @@ function handleMessage(topic, raw) {
     value = raw;
   }
 
-  if (topic === 'fire/gas') handleGas(value, raw);
-  else if (topic === 'fire/temp') handleTemp(value, raw);
-  else if (topic === 'fire/motion') handleMotion(value, raw);
+  if (topic === 'fw2352/gas') handleGas(value, raw);
+  else if (topic === 'fw2352/temp') handleTemp(value, raw);
+  else if (topic === 'fw2352/motion') handleMotion(value, raw);
 
   checkGlobalAlert();
 }
@@ -975,7 +975,7 @@ function handleGas(value, raw) {
   // Progress bar
   setBar('gas-bar', pct * 100, level);
 
-  addLog('fire/gas', `ADC=${numVal.toFixed(0)} — ${statusText}`, level);
+  addLog('fw2352/gas', `ADC=${numVal.toFixed(0)} — ${statusText}`, level);
 }
 
 function handleTemp(value, raw) {
@@ -1017,7 +1017,7 @@ function handleTemp(value, raw) {
   if (state.tempHistory.length > 30) state.tempHistory.shift();
   drawSparkline();
 
-  addLog('fire/temp', `${tempVal.toFixed(1)}°C — ${statusText}`, level);
+  addLog('fw2352/temp', `${tempVal.toFixed(1)}°C — ${statusText}`, level);
 }
 
 function handleMotion(value, raw) {
@@ -1061,7 +1061,7 @@ function handleMotion(value, raw) {
     blip.classList.add('active');
   }
 
-  addLog('fire/motion', detected ? 'MOTION DETECTED! PIR triggered' : 'Motion ended — area clear', level);
+  addLog('fw2352/motion', detected ? 'MOTION DETECTED! PIR triggered' : 'Motion ended — area clear', level);
 }
 
 // ── Global alert banner
