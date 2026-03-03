@@ -52,8 +52,8 @@ motion_timestamps = []        # list of ticks_ms for recent confirmed detections
 
 # ── Edge Computation: Occupied-state tracking ───────────────────────────
 OCCUPIED_TIMEOUT_SEC = 300    # 5 min of silence → zone considered idle
-last_motion_ticks    = 0      # ticks_ms of most-recent confirmed detection
-last_occupied_state  = False  # previous computed occupancy (for transitions)
+last_motion_ticks = 0      # ticks_ms of most-recent confirmed detection
+last_occupied_state = False  # previous computed occupancy (for transitions)
 
 # ── Edge Computation: Suppress duplicate "clear" publishes ────────────────
 last_published_detected = None  # last motion boolean we actually published
@@ -192,6 +192,8 @@ def connect_mqtt():
 
 # ── Publish payload ───────────────────────────────
 # Includes edge-computed fields: freq, activity level, occupancy, risk score.
+
+
 def publish_motion(detected: bool, count: int):
     global motion_timestamps, last_motion_ticks
 
@@ -203,15 +205,19 @@ def publish_motion(detected: bool, count: int):
     freq = len(motion_timestamps)
 
     # Activity level classification
-    if   freq == 0: activity = "idle"
-    elif freq <= 2: activity = "low"
-    elif freq <= 5: activity = "moderate"
-    else:           activity = "high"
+    if freq == 0:
+        activity = "idle"
+    elif freq <= 2:
+        activity = "low"
+    elif freq <= 5:
+        activity = "moderate"
+    else:
+        activity = "high"
 
     # Occupied: last confirmed detection within OCCUPIED_TIMEOUT_SEC
     if last_motion_ticks > 0:
         secs_since = time.ticks_diff(now_ms, last_motion_ticks) // 1000
-        occupied   = secs_since < OCCUPIED_TIMEOUT_SEC
+        occupied = secs_since < OCCUPIED_TIMEOUT_SEC
     else:
         occupied = False
 
@@ -362,7 +368,7 @@ def main():
             _now_ms = time.ticks_ms()
             if last_motion_ticks > 0:
                 _secs = time.ticks_diff(_now_ms, last_motion_ticks) // 1000
-                _occ  = _secs < OCCUPIED_TIMEOUT_SEC
+                _occ = _secs < OCCUPIED_TIMEOUT_SEC
             else:
                 _occ = False
             if _occ != last_occupied_state:
