@@ -1,0 +1,1239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FireWatch IoT — Real-Time Safety Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap');
+
+  :root {
+    --bg-deep: #030608;
+    --bg-panel: #080d12;
+    --bg-card: #0c1520;
+    --bg-card2: #0e1a28;
+    --border-dim: #1a2d3f;
+    --border-glow: #0a4060;
+    --accent-cyan: #00d4ff;
+    --accent-green: #00ff88;
+    --accent-yellow: #ffcc00;
+    --accent-orange: #ff7700;
+    --accent-red: #ff1a44;
+    --text-primary: #cce8f0;
+    --text-secondary: #4a7a90;
+    --text-mono: #7abccc;
+    --safe: #00ff88;
+    --warn: #ffcc00;
+    --danger: #ff1a44;
+    --glow-safe: 0 0 20px #00ff8866, 0 0 40px #00ff8822;
+    --glow-warn: 0 0 20px #ffcc0066, 0 0 40px #ffcc0022;
+    --glow-danger: 0 0 20px #ff1a4466, 0 0 40px #ff1a4422;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    font-family: 'Share Tech Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 800px;
+    height: 400px;
+    background: radial-gradient(ellipse at center, rgba(0,80,140,0.15) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 0 30px;
+    border-bottom: 1px solid var(--border-dim);
+    margin-bottom: 28px;
+  }
+
+  .header-left { display: flex; align-items: center; gap: 18px; }
+
+  .fire-icon {
+    font-size: 42px;
+    filter: drop-shadow(0 0 12px #ff4400);
+    animation: flicker 2s ease-in-out infinite alternate;
+  }
+
+  @keyframes flicker {
+    0% { filter: drop-shadow(0 0 8px #ff4400) drop-shadow(0 0 20px #ff220044); }
+    100% { filter: drop-shadow(0 0 16px #ff6600) drop-shadow(0 0 40px #ff440066); }
+  }
+
+  .header-title h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 28px;
+    letter-spacing: 4px;
+    background: linear-gradient(90deg, var(--accent-cyan), #ffffff, var(--accent-cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-size: 200%;
+    animation: shimmer 4s linear infinite;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: 0% }
+    100% { background-position: 200% }
+  }
+
+  .header-title p {
+    font-size: 11px;
+    color: var(--text-secondary);
+    letter-spacing: 3px;
+    margin-top: 4px;
+    text-transform: uppercase;
+  }
+
+  .header-right { display: flex; align-items: center; gap: 20px; }
+
+  .conn-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 8px 16px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--text-secondary);
+  }
+
+  .conn-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #333;
+    transition: all 0.4s;
+  }
+  .conn-dot.connected { background: var(--safe); box-shadow: var(--glow-safe); animation: pulse-dot 1.5s ease infinite; }
+  .conn-dot.error { background: var(--danger); box-shadow: var(--glow-danger); }
+  .conn-dot.connecting { background: var(--warn); animation: pulse-warn 0.8s ease infinite alternate; }
+
+  @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  @keyframes pulse-warn { from { opacity:0.3; } to { opacity:1; } }
+
+  #clock {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 14px;
+    color: var(--accent-cyan);
+    letter-spacing: 2px;
+  }
+
+  /* ── ALERT BANNER ── */
+  #alert-banner {
+    display: none;
+    background: linear-gradient(135deg, rgba(255,26,68,0.15), rgba(255,100,0,0.1));
+    border: 1px solid var(--danger);
+    border-left: 4px solid var(--danger);
+    padding: 14px 20px;
+    margin-bottom: 24px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--danger);
+    letter-spacing: 2px;
+    box-shadow: var(--glow-danger);
+    animation: blink-border 1s ease infinite alternate;
+  }
+
+  @keyframes blink-border {
+    from { border-color: var(--danger); }
+    to { border-color: #ff8844; }
+  }
+
+  #alert-banner.visible { display: flex; align-items: center; gap: 12px; }
+
+  /* ── GRID ── */
+  .grid-main {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+
+  .grid-bottom {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 20px;
+  }
+
+  @media (max-width: 900px) {
+    .grid-main { grid-template-columns: 1fr; }
+    .grid-bottom { grid-template-columns: 1fr; }
+  }
+
+  /* ── SENSOR CARD ── */
+  .sensor-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.4s, box-shadow 0.4s;
+  }
+
+  .sensor-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--card-accent, var(--accent-cyan)), transparent);
+    opacity: 0.6;
+  }
+
+  .sensor-card.safe { --card-accent: var(--safe); border-color: #1a3d2a; }
+  .sensor-card.warn { --card-accent: var(--warn); border-color: #3d3200; box-shadow: 0 0 30px rgba(255,204,0,0.08); }
+  .sensor-card.danger {
+    --card-accent: var(--danger);
+    border-color: rgba(255,26,68,0.5);
+    box-shadow: var(--glow-danger);
+    animation: card-danger-pulse 1.2s ease infinite alternate;
+  }
+
+  @keyframes card-danger-pulse {
+    from { box-shadow: 0 0 20px rgba(255,26,68,0.2); }
+    to { box-shadow: 0 0 40px rgba(255,26,68,0.5), 0 0 80px rgba(255,26,68,0.1); }
+  }
+
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 20px;
+  }
+
+  .card-node {
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .card-title {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: 2px;
+    color: var(--text-primary);
+  }
+
+  .card-topic {
+    font-size: 10px;
+    color: var(--accent-cyan);
+    opacity: 0.7;
+    letter-spacing: 1px;
+    margin-top: 3px;
+  }
+
+  /* ── STATUS INDICATOR LED ── */
+  .led-indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #1a2a1a;
+    border: 1px solid #2a4a2a;
+    transition: all 0.3s;
+    flex-shrink: 0;
+  }
+
+  .led-indicator.safe {
+    background: var(--safe);
+    border-color: var(--safe);
+    box-shadow: var(--glow-safe);
+    animation: led-pulse 2s ease infinite;
+  }
+
+  .led-indicator.warn {
+    background: var(--warn);
+    border-color: var(--warn);
+    box-shadow: var(--glow-warn);
+  }
+
+  .led-indicator.danger {
+    background: var(--danger);
+    border-color: var(--danger);
+    box-shadow: var(--glow-danger);
+    animation: led-blink 0.5s ease infinite alternate;
+  }
+
+  @keyframes led-pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.9); }
+  }
+
+  @keyframes led-blink {
+    from { opacity: 0.3; }
+    to { opacity: 1; }
+  }
+
+  /* ── GAUGE ── */
+  .gauge-wrap {
+    display: flex;
+    justify-content: center;
+    margin: 8px 0 20px;
+  }
+
+  .gauge-svg { overflow: visible; }
+
+  /* ── VALUE DISPLAY ── */
+  .value-display {
+    text-align: center;
+    margin-bottom: 16px;
+  }
+
+  .value-number {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 42px;
+    line-height: 1;
+    color: var(--value-color, var(--accent-cyan));
+    text-shadow: 0 0 20px currentColor;
+    transition: color 0.4s;
+  }
+
+  .value-unit {
+    font-size: 14px;
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+    margin-top: 4px;
+  }
+
+  /* ── STATUS BADGE ── */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    border: 1px solid;
+    font-size: 11px;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    letter-spacing: 2px;
+    width: 100%;
+    justify-content: center;
+    transition: all 0.4s;
+    margin-top: 8px;
+  }
+
+  .status-badge.safe {
+    color: var(--safe);
+    border-color: var(--safe);
+    background: rgba(0,255,136,0.06);
+    box-shadow: inset 0 0 20px rgba(0,255,136,0.05);
+  }
+
+  .status-badge.warn {
+    color: var(--warn);
+    border-color: var(--warn);
+    background: rgba(255,204,0,0.06);
+  }
+
+  .status-badge.danger {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: rgba(255,26,68,0.08);
+    animation: badge-flash 0.8s ease infinite alternate;
+  }
+
+  @keyframes badge-flash {
+    from { background: rgba(255,26,68,0.04); }
+    to { background: rgba(255,26,68,0.15); }
+  }
+
+  /* ── PROGRESS BAR ── */
+  .progress-track {
+    background: var(--border-dim);
+    height: 6px;
+    margin-top: 14px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    transition: width 0.6s cubic-bezier(0.4,0,0.2,1), background 0.4s;
+    position: relative;
+  }
+
+  .progress-fill::after {
+    content: '';
+    position: absolute;
+    right: 0; top: 0; bottom: 0;
+    width: 20px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4));
+  }
+
+  /* ── LOG PANEL ── */
+  .log-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 24px;
+  }
+
+  .log-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-dim);
+  }
+
+  .log-panel-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    color: var(--text-primary);
+  }
+
+  .log-count {
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+  }
+
+  #event-log {
+    height: 200px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-glow) transparent;
+  }
+
+  #event-log::-webkit-scrollbar { width: 4px; }
+  #event-log::-webkit-scrollbar-track { background: transparent; }
+  #event-log::-webkit-scrollbar-thumb { background: var(--border-glow); }
+
+  .log-entry {
+    display: flex;
+    gap: 12px;
+    padding: 7px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    font-size: 11px;
+    line-height: 1.4;
+    animation: log-in 0.3s ease;
+  }
+
+  @keyframes log-in {
+    from { opacity: 0; transform: translateX(-10px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .log-time { color: var(--text-secondary); flex-shrink: 0; min-width: 72px; }
+  .log-topic { color: var(--accent-cyan); flex-shrink: 0; min-width: 90px; opacity: 0.8; }
+  .log-msg { flex: 1; }
+  .log-msg.safe { color: var(--safe); }
+  .log-msg.warn { color: var(--warn); }
+  .log-msg.danger { color: var(--danger); }
+
+  /* ── STATS PANEL ── */
+  .stats-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 24px;
+  }
+
+  .stats-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 3px;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-dim);
+    color: var(--text-primary);
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    font-size: 11px;
+  }
+
+  .stat-label { color: var(--text-secondary); letter-spacing: 1px; }
+  .stat-value { font-family: 'Orbitron', sans-serif; font-size: 13px; color: var(--accent-cyan); }
+  .stat-value.alert { color: var(--danger); }
+
+  /* ── SPARKLINE ── */
+  .sparkline-wrap { margin-top: 16px; }
+  .spark-label { font-size: 10px; color: var(--text-secondary); letter-spacing: 2px; margin-bottom: 6px; }
+  canvas.spark { width: 100%; height: 50px; display: block; }
+
+  /* ── FOOTER ── */
+  footer {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-dim);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+  }
+
+  .broker-info { display: flex; gap: 20px; }
+
+  /* ── MOTION VISUAL ── */
+  .motion-visual {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 16px 0;
+  }
+
+  .motion-radar {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    border: 1px solid var(--border-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .radar-rings::before, .radar-rings::after {
+    content: '';
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid rgba(0,212,255,0.15);
+  }
+
+  .radar-rings::before { inset: 20px; }
+  .radar-rings::after { inset: 40px; }
+
+  .radar-sweep {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, rgba(0,212,255,0.3) 0deg, transparent 60deg);
+    animation: sweep 3s linear infinite;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+
+  .radar-sweep.active { opacity: 1; }
+
+  @keyframes sweep {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .radar-center {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-cyan);
+    transition: all 0.3s;
+  }
+
+  .radar-center.motion {
+    background: var(--danger);
+    box-shadow: 0 0 16px var(--danger);
+    animation: radar-ping 0.5s ease infinite alternate;
+  }
+
+  .motion-blip {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 8px var(--danger);
+    display: none;
+  }
+
+  .motion-blip.active { display: block; animation: blip-fade 1.5s ease forwards; }
+
+  @keyframes blip-fade {
+    0% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(2); }
+  }
+
+  @keyframes radar-ping {
+    from { transform: scale(1); }
+    to { transform: scale(1.5); box-shadow: 0 0 30px var(--danger); }
+  }
+
+  .motion-count {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px;
+    color: var(--text-secondary);
+    letter-spacing: 2px;
+    margin-top: 6px;
+  }
+
+  /* ── CORNER DECORATION ── */
+  .corner-tl, .corner-br {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+  }
+  .corner-tl { top: 0; left: 0; border-top: 2px solid var(--accent-cyan); border-left: 2px solid var(--accent-cyan); opacity: 0.4; }
+  .corner-br { bottom: 0; right: 0; border-bottom: 2px solid var(--accent-cyan); border-right: 2px solid var(--accent-cyan); opacity: 0.4; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- HEADER -->
+  <header>
+    <div class="header-left">
+      <div class="fire-icon">🔥</div>
+      <div class="header-title">
+        <h1>FIREWATCH IoT</h1>
+        <p>Real-Time Fire Safety Monitoring System</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div id="clock">--:--:--</div>
+      <div class="conn-status">
+        <div class="conn-dot" id="conn-dot"></div>
+        <span id="conn-label">CONNECTING...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ALERT BANNER -->
+  <div id="alert-banner">
+    <span>⚡</span>
+    <span id="alert-text">SYSTEM ALERT</span>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="grid-main">
+
+    <!-- GAS CARD -->
+    <div class="sensor-card safe" id="card-gas">
+      <div class="corner-tl"></div>
+      <div class="corner-br"></div>
+      <div class="card-header">
+        <div>
+          <div class="card-node">ESP32 Node · MQ-2/MQ-5 Sensor</div>
+          <div class="card-title">GAS DETECTION</div>
+          <div class="card-topic">fire/gas</div>
+        </div>
+        <div class="led-indicator safe" id="led-gas"></div>
+      </div>
+
+      <div class="gauge-wrap">
+        <svg class="gauge-svg" width="180" height="110" viewBox="0 0 180 110">
+          <defs>
+            <linearGradient id="gas-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#00ff88"/>
+              <stop offset="50%" stop-color="#ffcc00"/>
+              <stop offset="100%" stop-color="#ff1a44"/>
+            </linearGradient>
+          </defs>
+          <!-- Background arc -->
+          <path d="M 20 100 A 70 70 0 0 1 160 100" fill="none" stroke="#1a2d3f" stroke-width="12" stroke-linecap="round"/>
+          <!-- Colored arc -->
+          <path id="gas-arc" d="M 20 100 A 70 70 0 0 1 160 100" fill="none" stroke="url(#gas-grad)" stroke-width="12" stroke-linecap="round"
+                stroke-dasharray="220" stroke-dashoffset="220" style="transition:stroke-dashoffset 0.8s ease"/>
+          <!-- Needle -->
+          <line id="gas-needle" x1="90" y1="100" x2="90" y2="38"
+                stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"
+                style="transform-origin:90px 100px; transform:rotate(-90deg); transition:transform 0.8s ease"/>
+          <circle cx="90" cy="100" r="5" fill="#ffffff" opacity="0.8"/>
+          <!-- Labels -->
+          <text x="12" y="115" fill="#4a7a90" font-size="9" font-family="Share Tech Mono">0</text>
+          <text x="86" y="20" fill="#4a7a90" font-size="9" font-family="Share Tech Mono" text-anchor="middle">512</text>
+          <text x="162" y="115" fill="#4a7a90" font-size="9" font-family="Share Tech Mono">1023</text>
+        </svg>
+      </div>
+
+      <div class="value-display">
+        <div class="value-number" id="gas-value" style="--value-color:#00ff88">—</div>
+        <div class="value-unit">ADC VALUE</div>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="gas-bar" style="width:0%; background:var(--safe)"></div>
+      </div>
+
+      <div class="status-badge safe" id="badge-gas">
+        <span>●</span> SAFE — NO GAS DETECTED
+      </div>
+    </div>
+
+    <!-- TEMPERATURE CARD -->
+    <div class="sensor-card safe" id="card-temp">
+      <div class="corner-tl"></div>
+      <div class="corner-br"></div>
+      <div class="card-header">
+        <div>
+          <div class="card-node">ESP8266 Node · DHT11/DS18B20</div>
+          <div class="card-title">TEMPERATURE</div>
+          <div class="card-topic">fire/temp</div>
+        </div>
+        <div class="led-indicator safe" id="led-temp"></div>
+      </div>
+
+      <div class="gauge-wrap">
+        <svg class="gauge-svg" width="180" height="110" viewBox="0 0 180 110">
+          <defs>
+            <linearGradient id="temp-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#00b0ff"/>
+              <stop offset="50%" stop-color="#ffcc00"/>
+              <stop offset="100%" stop-color="#ff1a44"/>
+            </linearGradient>
+          </defs>
+          <path d="M 20 100 A 70 70 0 0 1 160 100" fill="none" stroke="#1a2d3f" stroke-width="12" stroke-linecap="round"/>
+          <path id="temp-arc" d="M 20 100 A 70 70 0 0 1 160 100" fill="none" stroke="url(#temp-grad)" stroke-width="12" stroke-linecap="round"
+                stroke-dasharray="220" stroke-dashoffset="220" style="transition:stroke-dashoffset 0.8s ease"/>
+          <line id="temp-needle" x1="90" y1="100" x2="90" y2="38"
+                stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"
+                style="transform-origin:90px 100px; transform:rotate(-90deg); transition:transform 0.8s ease"/>
+          <circle cx="90" cy="100" r="5" fill="#ffffff" opacity="0.8"/>
+          <text x="6" y="115" fill="#4a7a90" font-size="9" font-family="Share Tech Mono">-10°</text>
+          <text x="83" y="20" fill="#4a7a90" font-size="9" font-family="Share Tech Mono" text-anchor="middle">45°</text>
+          <text x="158" y="115" fill="#4a7a90" font-size="9" font-family="Share Tech Mono">100°</text>
+        </svg>
+      </div>
+
+      <div class="value-display">
+        <div class="value-number" id="temp-value" style="--value-color:#00b0ff">—</div>
+        <div class="value-unit">CELSIUS (°C)</div>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="temp-bar" style="width:0%; background:var(--safe)"></div>
+      </div>
+
+      <div class="status-badge safe" id="badge-temp">
+        <span>●</span> NORMAL TEMPERATURE
+      </div>
+    </div>
+
+    <!-- MOTION CARD -->
+    <div class="sensor-card safe" id="card-motion">
+      <div class="corner-tl"></div>
+      <div class="corner-br"></div>
+      <div class="card-header">
+        <div>
+          <div class="card-node">Raspberry Pi Pico W · PIR HC-SR501</div>
+          <div class="card-title">MOTION DETECTION</div>
+          <div class="card-topic">fire/motion</div>
+        </div>
+        <div class="led-indicator safe" id="led-motion"></div>
+      </div>
+
+      <div class="motion-visual">
+        <div class="motion-radar">
+          <div class="radar-rings"></div>
+          <div class="radar-sweep" id="radar-sweep"></div>
+          <div class="radar-center" id="radar-center"></div>
+          <div class="motion-blip" id="motion-blip" style="top:25px; right:35px;"></div>
+        </div>
+        <div class="motion-count">EVENTS: <span id="motion-count" style="color:var(--accent-cyan)">0</span></div>
+      </div>
+
+      <div class="value-display" style="margin-top:0; margin-bottom:8px">
+        <div class="value-number" id="motion-value" style="--value-color:#00ff88; font-size:22px">AREA CLEAR</div>
+      </div>
+
+      <div class="status-badge safe" id="badge-motion">
+        <span>●</span> NO MOTION DETECTED
+      </div>
+    </div>
+
+  </div>
+
+  <!-- BOTTOM GRID -->
+  <div class="grid-bottom">
+
+    <!-- LOG PANEL -->
+    <div class="log-panel">
+      <div class="log-panel-header">
+        <div class="log-panel-title">EVENT LOG</div>
+        <div class="log-count" id="log-count">0 EVENTS</div>
+      </div>
+      <div id="event-log"></div>
+    </div>
+
+    <!-- STATS PANEL -->
+    <div class="stats-panel">
+      <div class="stats-title">SESSION STATS</div>
+      <div class="stat-row">
+        <span class="stat-label">BROKER</span>
+        <span class="stat-value">broker.hivemq.com</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">MESSAGES RX</span>
+        <span class="stat-value" id="stat-msgs">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">GAS ALERTS</span>
+        <span class="stat-value" id="stat-gas-alerts">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">TEMP ALERTS</span>
+        <span class="stat-value" id="stat-temp-alerts">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">MOTION EVENTS</span>
+        <span class="stat-value" id="stat-motion-events">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">UPTIME</span>
+        <span class="stat-value" id="stat-uptime">00:00:00</span>
+      </div>
+      <div class="sparkline-wrap">
+        <div class="spark-label">TEMPERATURE TREND</div>
+        <canvas class="spark" id="temp-spark" width="300" height="50"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="broker-info">
+      <span>MQTT: broker.hivemq.com:8884 (WSS)</span>
+      <span>QoS: 1</span>
+      <span>TOPICS: fire/gas · fire/temp · fire/motion</span>
+    </div>
+    <span>FIREWATCH IoT v1.0 — REAL-TIME FIRE SAFETY</span>
+  </footer>
+
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+//  FIREWATCH IoT Dashboard — MQTT WebSocket
+// ─────────────────────────────────────────────
+
+const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
+const TOPICS = ['fire/gas', 'fire/temp', 'fire/motion'];
+
+// State
+const state = {
+  gas: { value: null, status: 'WAITING', alert: false },
+  temp: { value: null, status: 'WAITING', alert: false },
+  motion: { detected: false, count: 0 },
+  connected: false,
+  msgCount: 0,
+  gasAlerts: 0,
+  tempAlerts: 0,
+  logCount: 0,
+  startTime: Date.now(),
+  tempHistory: []
+};
+
+// ── DOM refs
+const $ = id => document.getElementById(id);
+let client;
+
+// ── MQTT Connect
+function connectMQTT() {
+  setConnStatus('connecting', 'CONNECTING...');
+
+  const clientId = 'firewatch_' + Math.random().toString(36).substr(2, 8);
+
+  try {
+    client = mqtt.connect(BROKER_WS, {
+      clientId,
+      keepalive: 60,
+      reconnectPeriod: 3000,
+      connectTimeout: 10000,
+      clean: true
+    });
+
+    client.on('connect', () => {
+      state.connected = true;
+      setConnStatus('connected', 'CONNECTED');
+      TOPICS.forEach(t => client.subscribe(t, { qos: 1 }));
+      // Stop demo simulator if it was running
+      if (simTimer) { clearInterval(simTimer); simTimer = null; simMode = false; }
+      addLog('SYS', 'Connected to HiveMQ broker', 'safe');
+      addLog('SYS', 'Subscribed: ' + TOPICS.join(', '), 'safe');
+    });
+
+    client.on('message', (topic, message) => {
+      const raw = message.toString().trim();
+      handleMessage(topic, raw);
+    });
+
+    client.on('error', (err) => {
+      setConnStatus('error', 'ERROR');
+      addLog('SYS', 'MQTT error: ' + err.message, 'danger');
+    });
+
+    client.on('offline', () => {
+      setConnStatus('error', 'OFFLINE');
+      addLog('SYS', 'Connection lost — reconnecting...', 'warn');
+    });
+
+    client.on('reconnect', () => {
+      setConnStatus('connecting', 'RECONNECTING...');
+    });
+
+  } catch(e) {
+    setConnStatus('error', 'FAILED');
+    addLog('SYS', 'Connection failed: ' + e.message, 'danger');
+  }
+}
+
+// ── Parse incoming MQTT message
+function handleMessage(topic, raw) {
+  state.msgCount++;
+  $('stat-msgs').textContent = state.msgCount;
+
+  let value;
+  try {
+    const parsed = JSON.parse(raw);
+    value = typeof parsed === 'object' ? parsed : parsed.valueOf();
+  } catch(e) {
+    value = raw;
+  }
+
+  if (topic === 'fire/gas') handleGas(value, raw);
+  else if (topic === 'fire/temp') handleTemp(value, raw);
+  else if (topic === 'fire/motion') handleMotion(value, raw);
+
+  checkGlobalAlert();
+}
+
+function handleGas(value, raw) {
+  let numVal = 0;
+  if (typeof value === 'number') {
+    numVal = value;
+  } else if (typeof value === 'string') {
+    const lower = value.toLowerCase();
+    if (['leak','alert','1','true'].includes(lower)) numVal = 850;
+    else if (['safe','0','false'].includes(lower)) numVal = 80;
+    else numVal = parseFloat(value) || 0;
+  } else if (typeof value === 'object') {
+    numVal = value.value || value.ppm || value.adc || 0;
+  }
+
+  let level, statusText, alertFlag = false;
+  if (numVal > 400) {
+    level = 'danger'; statusText = '⚠ GAS LEAK DETECTED!'; alertFlag = true;
+    if (!state.gas.alert) { state.gasAlerts++; $('stat-gas-alerts').textContent = state.gasAlerts; $('stat-gas-alerts').className = 'stat-value alert'; }
+  } else if (numVal > 200) {
+    level = 'warn'; statusText = '⚡ WARNING: Elevated Gas';
+  } else {
+    level = 'safe'; statusText = '✔ SAFE — No Gas Detected';
+  }
+
+  state.gas = { value: numVal, status: statusText, alert: alertFlag };
+
+  // Update card
+  setCardLevel('card-gas', level);
+  setLed('led-gas', level);
+  setBadge('badge-gas', level, statusText);
+
+  // Gauge needle & arc
+  const pct = Math.min(numVal / 1023, 1);
+  setGaugeArc('gas-arc', pct);
+  setGaugeNeedle('gas-needle', pct);
+
+  // Value display
+  const valEl = $('gas-value');
+  valEl.textContent = numVal.toFixed(0);
+  valEl.style.setProperty('--value-color', levelColor(level));
+
+  // Progress bar
+  setBar('gas-bar', pct * 100, level);
+
+  addLog('fire/gas', `ADC=${numVal.toFixed(0)} — ${statusText}`, level);
+}
+
+function handleTemp(value, raw) {
+  let tempVal = 0;
+  if (typeof value === 'number') tempVal = value;
+  else if (typeof value === 'string') tempVal = parseFloat(value) || 0;
+  else if (typeof value === 'object') tempVal = value.temperature || value.temp || value.value || 0;
+
+  let level, statusText, alertFlag = false;
+  if (tempVal >= 60) {
+    level = 'danger'; statusText = '🔥 FIRE ALERT! CRITICAL TEMP'; alertFlag = true;
+    if (!state.temp.alert) { state.tempAlerts++; $('stat-temp-alerts').textContent = state.tempAlerts; $('stat-temp-alerts').className = 'stat-value alert'; }
+  } else if (tempVal >= 45) {
+    level = 'danger'; statusText = '⚠ HIGH TEMP WARNING'; alertFlag = true;
+  } else if (tempVal >= 35) {
+    level = 'warn'; statusText = '⚡ ELEVATED TEMPERATURE';
+  } else {
+    level = 'safe'; statusText = '✔ NORMAL TEMPERATURE';
+  }
+
+  state.temp = { value: tempVal, status: statusText, alert: alertFlag };
+
+  setCardLevel('card-temp', level);
+  setLed('led-temp', level);
+  setBadge('badge-temp', level, statusText);
+
+  const pct = Math.min(Math.max((tempVal + 10) / 110, 0), 1); // -10 to 100 range
+  setGaugeArc('temp-arc', pct);
+  setGaugeNeedle('temp-needle', pct);
+
+  const valEl = $('temp-value');
+  valEl.textContent = tempVal.toFixed(1) + '°';
+  valEl.style.setProperty('--value-color', levelColor(level));
+
+  setBar('temp-bar', pct * 100, level);
+
+  // Sparkline
+  state.tempHistory.push(tempVal);
+  if (state.tempHistory.length > 30) state.tempHistory.shift();
+  drawSparkline();
+
+  addLog('fire/temp', `${tempVal.toFixed(1)}°C — ${statusText}`, level);
+}
+
+function handleMotion(value, raw) {
+  let detected = false;
+  if (typeof value === 'boolean') detected = value;
+  else if (typeof value === 'number') detected = value === 1;
+  else if (typeof value === 'string') {
+    const lower = value.toLowerCase().trim();
+    detected = ['1','true','motion','detected','yes'].includes(lower);
+  } else if (typeof value === 'object') {
+    detected = !!(value.motion || value.detected || value.value);
+  }
+
+  if (detected) state.motion.count++;
+  state.motion.detected = detected;
+  $('stat-motion-events').textContent = state.motion.count;
+  $('motion-count').textContent = state.motion.count;
+
+  const level = detected ? 'danger' : 'safe';
+  const statusText = detected ? '⚠ MOTION DETECTED!' : '✔ AREA CLEAR';
+
+  setCardLevel('card-motion', level);
+  setLed('led-motion', level);
+  setBadge('badge-motion', level, statusText);
+
+  const valEl = $('motion-value');
+  valEl.textContent = detected ? 'MOTION!' : 'AREA CLEAR';
+  valEl.style.setProperty('--value-color', detected ? 'var(--danger)' : 'var(--safe)');
+  valEl.style.fontSize = detected ? '26px' : '18px';
+
+  // Radar animation
+  const sweep = $('radar-sweep');
+  const center = $('radar-center');
+  sweep.classList.toggle('active', detected);
+  center.classList.toggle('motion', detected);
+
+  if (detected) {
+    const blip = $('motion-blip');
+    blip.classList.remove('active');
+    void blip.offsetWidth; // reflow
+    blip.classList.add('active');
+  }
+
+  addLog('fire/motion', detected ? 'MOTION DETECTED! PIR triggered' : 'Motion ended — area clear', level);
+}
+
+// ── Global alert banner
+function checkGlobalAlert() {
+  const anyAlert = state.gas.alert || state.temp.alert || state.motion.detected;
+  const banner = $('alert-banner');
+  if (anyAlert) {
+    banner.classList.add('visible');
+    const parts = [];
+    if (state.gas.alert) parts.push('[GAS] ' + state.gas.status);
+    if (state.temp.alert) parts.push('[TEMP] ' + state.temp.status);
+    if (state.motion.detected) parts.push('[MOTION] DETECTED');
+    $('alert-text').textContent = '⚡ ACTIVE ALERT: ' + parts.join('  |  ');
+  } else {
+    banner.classList.remove('visible');
+  }
+}
+
+// ── UI helpers
+function setConnStatus(cls, label) {
+  const dot = $('conn-dot');
+  dot.className = 'conn-dot ' + cls;
+  $('conn-label').textContent = label;
+}
+
+function setCardLevel(id, level) {
+  const el = $(id);
+  el.className = 'sensor-card ' + level;
+}
+
+function setLed(id, level) {
+  $(id).className = 'led-indicator ' + level;
+}
+
+function setBadge(id, level, text) {
+  const el = $(id);
+  el.className = 'status-badge ' + level;
+  el.innerHTML = `<span>●</span> ${text}`;
+}
+
+function levelColor(level) {
+  return level === 'danger' ? 'var(--danger)' : level === 'warn' ? 'var(--warn)' : 'var(--safe)';
+}
+
+function setBar(id, pct, level) {
+  const el = $(id);
+  el.style.width = Math.min(pct, 100) + '%';
+  el.style.background = levelColor(level);
+}
+
+function setGaugeArc(id, pct) {
+  const el = $(id);
+  const total = 220;
+  el.style.strokeDashoffset = total * (1 - pct);
+}
+
+function setGaugeNeedle(id, pct) {
+  const el = $(id);
+  // Rotate from -90deg (left) to +90deg (right)
+  const deg = -90 + pct * 180;
+  el.style.transform = `rotate(${deg}deg)`;
+}
+
+// ── Event log
+function addLog(topic, msg, level) {
+  state.logCount++;
+  const logEl = $('event-log');
+  const time = new Date().toLocaleTimeString('en-US', {hour12: false});
+
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `
+    <span class="log-time">${time}</span>
+    <span class="log-topic">${topic}</span>
+    <span class="log-msg ${level}">${msg}</span>
+  `;
+
+  logEl.insertBefore(entry, logEl.firstChild);
+
+  // Keep max 100 entries
+  while (logEl.children.length > 100) logEl.removeChild(logEl.lastChild);
+
+  $('log-count').textContent = Math.min(state.logCount, 100) + ' EVENTS';
+}
+
+// ── Sparkline
+function drawSparkline() {
+  const canvas = $('temp-spark');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const data = state.tempHistory;
+  if (data.length < 2) return;
+
+  ctx.clearRect(0, 0, w, h);
+
+  const min = Math.min(...data) - 5;
+  const max = Math.max(...data) + 5;
+
+  ctx.beginPath();
+  ctx.strokeStyle = '#00d4ff';
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = '#00d4ff';
+  ctx.shadowBlur = 6;
+
+  data.forEach((val, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((val - min) / (max - min)) * h;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Fill
+  ctx.shadowBlur = 0;
+  const lastX = w;
+  const lastY = h - ((data[data.length-1] - min) / (max - min)) * h;
+  ctx.lineTo(lastX, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(0,212,255,0.06)';
+  ctx.fill();
+}
+
+// ── Clock & Uptime
+function updateClock() {
+  const now = new Date();
+  $('clock').textContent = now.toLocaleTimeString('en-US', {hour12: false});
+
+  const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+  const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+  const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  $('stat-uptime').textContent = `${h}:${m}:${s}`;
+}
+
+// ── Demo simulator (runs if MQTT fails or for testing)
+let simMode = false;
+let simTimer = null;
+
+function startSimulator() {
+  if (simMode) return;
+  simMode = true;
+  addLog('SYS', 'MQTT unavailable — running DEMO simulation', 'warn');
+  setConnStatus('connecting', 'DEMO MODE');
+
+  const gasSeq = [80, 120, 200, 320, 500, 700, 850, 400, 200, 100, 80];
+  const tempSeq = [24, 26, 30, 35, 40, 47, 65, 50, 35, 28, 25];
+  const motionSeq = [0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0];
+  let idx = 0;
+
+  simTimer = setInterval(() => {
+    handleGas(gasSeq[idx % gasSeq.length], String(gasSeq[idx % gasSeq.length]));
+    handleTemp(tempSeq[idx % tempSeq.length], String(tempSeq[idx % tempSeq.length]));
+    handleMotion(motionSeq[idx % motionSeq.length], String(motionSeq[idx % motionSeq.length]));
+    state.msgCount += 3;
+    $('stat-msgs').textContent = state.msgCount;
+    checkGlobalAlert();
+    idx++;
+  }, 3000);
+}
+
+// Start
+connectMQTT();
+setInterval(updateClock, 1000);
+updateClock();
+addLog('SYS', 'FireWatch IoT Dashboard initializing...', 'safe');
+
+// Fallback to demo after 8 seconds if not connected
+setTimeout(() => {
+  if (!state.connected) {
+    startSimulator();
+  }
+}, 8000);
+</script>
+</body>
+</html>
