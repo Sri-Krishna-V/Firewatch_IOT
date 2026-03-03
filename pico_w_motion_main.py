@@ -24,10 +24,10 @@ WIFI_PASS = "12345678"
 MQTT_BROKER = b"broker.hivemq.com"
 MQTT_PORT = 1883
 # Unique prefix avoids topic collision on public broker
-MQTT_TOPIC  = b"fw2352/motion"
+MQTT_TOPIC = b"fw2352/motion"
 MQTT_CLIENT = b"fw2352_picow_motion"
 STATUS_TOPIC = b"fw2352/status"
-CMD_TOPIC   = b"fw2352/cmd/motion"   # arm / disarm commands from dashboard
+CMD_TOPIC = b"fw2352/cmd/motion"   # arm / disarm commands from dashboard
 
 # ── Pins ─────────────────────────────────────────
 PIR_PIN = 15    # GPIO15 — PIR signal output
@@ -54,6 +54,8 @@ client = None
 # ── Logger ───────────────────────────────────────
 # Prefix every line with elapsed seconds so you can reconstruct a timeline
 # from a paste of the REPL output.
+
+
 def log(level, msg):
     t = time.ticks_ms() // 1000
     print(f"[{t:6d}s][{level}] {msg}")
@@ -95,8 +97,10 @@ def connect_wifi():
             log("WiFi", f"Connected!  IP={ip}  GW={gw}  RSSI={rssi} dBm")
             # Blink 3 times to signal WiFi OK
             for _ in range(3):
-                led.on(); time.sleep(0.1)
-                led.off(); time.sleep(0.1)
+                led.on()
+                time.sleep(0.1)
+                led.off()
+                time.sleep(0.1)
             return True
         log("WiFi", f"Waiting... attempt {i+1}/20  wlan.status()={status}")
         time.sleep(0.5)
@@ -136,7 +140,8 @@ def cmd_callback(topic, msg):
 
 def connect_mqtt():
     global client
-    log("MQTT", f"Connecting to {MQTT_BROKER.decode()}:{MQTT_PORT}  client_id={MQTT_CLIENT.decode()}")
+    log("MQTT",
+        f"Connecting to {MQTT_BROKER.decode()}:{MQTT_PORT}  client_id={MQTT_CLIENT.decode()}")
     log("MQTT", "(this can take 5-15s on first attempt — DNS + TCP handshake)")
     try:
         client = MQTTClient(
@@ -167,7 +172,8 @@ def connect_mqtt():
         return True
     except Exception as e:
         log("ERR", f"MQTT connect failed: {e}")
-        sys.print_exception(e)   # <-- full traceback helps diagnose socket/DNS errors
+        # <-- full traceback helps diagnose socket/DNS errors
+        sys.print_exception(e)
         return False
 
 # ── Publish payload ───────────────────────────────
@@ -228,7 +234,8 @@ def main():
     log("BOOT", f" MicroPython {sys.version}")
     log("BOOT", f" PIR GPIO{PIR_PIN}   debounce={DEBOUNCE_MS}ms")
     log("BOOT", f" Broker  {MQTT_BROKER.decode()}:{MQTT_PORT}")
-    log("BOOT", f" Topics  pub={MQTT_TOPIC.decode()}  cmd={CMD_TOPIC.decode()}")
+    log("BOOT",
+        f" Topics  pub={MQTT_TOPIC.decode()}  cmd={CMD_TOPIC.decode()}")
     log("BOOT", "═" * 44)
 
     led.off()
@@ -239,8 +246,10 @@ def main():
         # Rapid blink so you can distinguish WiFi failure from MQTT failure
         while True:
             for _ in range(3):
-                led.on(); time.sleep(0.1)
-                led.off(); time.sleep(0.1)
+                led.on()
+                time.sleep(0.1)
+                led.off()
+                time.sleep(0.1)
             time.sleep(1)
 
     time.sleep(1)
@@ -249,8 +258,10 @@ def main():
         log("FATAL", "No MQTT — check broker hostname, port, and network firewall")
         # Slow blink = MQTT failure (distinct from WiFi fast-blink)
         while True:
-            led.on(); time.sleep(0.5)
-            led.off(); time.sleep(0.5)
+            led.on()
+            time.sleep(0.5)
+            led.off()
+            time.sleep(0.5)
 
     # Attach interrupt
     pir.irq(trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING, handler=pir_handler)
@@ -275,7 +286,8 @@ def main():
                     pending_motion = None
                     if detected:
                         motion_count += 1
-                        log("PIR", f"*** MOTION DETECTED  event=#{motion_count} ***")
+                        log("PIR",
+                            f"*** MOTION DETECTED  event=#{motion_count} ***")
                         led.on()
                     else:
                         log("PIR", "Motion ended — area clear")
@@ -297,7 +309,8 @@ def main():
             break
         except Exception as e:
             log("ERR", f"Main loop exception: {e}")
-            sys.print_exception(e)  # full traceback — paste this when asking for help
+            # full traceback — paste this when asking for help
+            sys.print_exception(e)
             log("ERR", "Waiting 3s then attempting full reconnect...")
             time.sleep(3)
             connect_wifi()
@@ -309,6 +322,7 @@ if __name__ == "__main__":
     # HC-SR501 needs ~60s on first power-on to self-calibrate.
     PRODUCTION = False
     warmup = 60 if PRODUCTION else 5
-    log("BOOT", f"Sensor warm-up ({warmup}s){'  [PRODUCTION]' if PRODUCTION else '  [TEST \u2014 set PRODUCTION=True when deploying]'}...")
+    log("BOOT",
+        f"Sensor warm-up ({warmup}s){'  [PRODUCTION]' if PRODUCTION else '  [TEST \u2014 set PRODUCTION=True when deploying]'}...")
     time.sleep(warmup)
     main()
