@@ -985,10 +985,10 @@ function handleTemp(value, raw) {
   else if (typeof value === 'object') tempVal = value.temperature || value.temp || value.value || 0;
 
   let level, statusText, alertFlag = false;
-  if (tempVal >= 60) {
+  if (tempVal >= 48) {
     level = 'danger'; statusText = '🔥 FIRE ALERT! CRITICAL TEMP'; alertFlag = true;
     if (!state.temp.alert) { state.tempAlerts++; $('stat-temp-alerts').textContent = state.tempAlerts; $('stat-temp-alerts').className = 'stat-value alert'; }
-  } else if (tempVal >= 45) {
+  } else if (tempVal >= 42) {
     level = 'danger'; statusText = '⚠ HIGH TEMP WARNING'; alertFlag = true;
   } else if (tempVal >= 35) {
     level = 'warn'; statusText = '⚡ ELEVATED TEMPERATURE';

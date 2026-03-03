@@ -26,20 +26,32 @@ const char *MQTT_TOPIC =
 const char *MQTT_CLIENT = "fw2352_esp8266_temp";
 
 // ── DHT Sensor ──
+<<<<<<< HEAD
 #define DHTPIN 4 // GPIO4 = D2 on NodeMCU
 #define DHTTYPE                                                                \
   DHT22 // DHT22 measures up to 80°C — required for fire detection
         // DHT11 only goes to 50°C, so TEMP_CRITICAL (60°C) would never trigger
+=======
+#define DHTPIN   4        // GPIO4 = D2 on NodeMCU
+#define DHTTYPE  DHT11    // DHT11 — max range 0-50°C, thresholds adjusted accordingly
+>>>>>>> 379fc75746cc6aecc9272711a9d674fde2ecfc3e
 DHT dht(DHTPIN, DHTTYPE);
 
 // ── Pins ──
 const int LED_PIN = LED_BUILTIN; // D4 / GPIO2 (active LOW on ESP8266)
 const int BUZZER_PIN = 5;        // D1 / GPIO5 (optional)
 
+<<<<<<< HEAD
 // ── Thresholds ──
 const float TEMP_ELEVATED = 35.0;
 const float TEMP_WARN = 45.0;
 const float TEMP_CRITICAL = 60.0;
+=======
+// ── Thresholds ── (calibrated for DHT11 max range 0–50°C)
+const float TEMP_ELEVATED = 35.0;   // Warm — worth watching
+const float TEMP_WARN     = 42.0;   // Hot — possible fire nearby
+const float TEMP_CRITICAL = 48.0;   // Near DHT11 sensor limit — treat as FIRE alert
+>>>>>>> 379fc75746cc6aecc9272711a9d674fde2ecfc3e
 
 // ── Timing ──
 const unsigned long PUBLISH_INTERVAL = 3000;
