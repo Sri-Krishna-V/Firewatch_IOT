@@ -7,29 +7,30 @@
  * ================================================
  */
 
-#include <WiFi.h>
 #include <PubSubClient.h>
+#include <WiFi.h>
 
 // ── Config ──
-const char* WIFI_SSID     = "YOUR_WIFI_SSID";
-const char* WIFI_PASS     = "YOUR_WIFI_PASSWORD";
-const char* MQTT_BROKER   = "broker.hivemq.com";
-const int   MQTT_PORT     = 1883;
-const char* MQTT_TOPIC    = "fw2352/gas";       // Unique prefix avoids topic collision on public broker
-const char* MQTT_CLIENT   = "fw2352_esp32_gas";
+const char *WIFI_SSID = "Nothing 2a plus";
+const char *WIFI_PASS = "12345678";
+const char *MQTT_BROKER = "broker.hivemq.com";
+const int MQTT_PORT = 1883;
+const char *MQTT_TOPIC =
+    "fw2352/gas"; // Unique prefix avoids topic collision on public broker
+const char *MQTT_CLIENT = "fw2352_esp32_gas";
 
 // ── Pins ──
-const int GAS_SENSOR_PIN  = 34;   // ADC1_CH6 — analog read
-const int LED_BUILTIN_PIN = 2;    // Onboard LED
-const int BUZZER_PIN      = 25;   // Optional buzzer
-const int BUZZER_CHANNEL  = 0;    // LEDC channel for buzzer (ESP32)
+const int GAS_SENSOR_PIN = 34; // ADC1_CH6 — analog read
+const int LED_BUILTIN_PIN = 2; // Onboard LED
+const int BUZZER_PIN = 25;     // Optional buzzer
+const int BUZZER_CHANNEL = 0;  // LEDC channel for buzzer (ESP32)
 
 // ── Thresholds ──
-const int GAS_WARN_THRESHOLD  = 200;
+const int GAS_WARN_THRESHOLD = 200;
 const int GAS_ALERT_THRESHOLD = 400;
 
 // ── Timing ──
-const unsigned long PUBLISH_INTERVAL = 2000;  // ms
+const unsigned long PUBLISH_INTERVAL = 2000; // ms
 unsigned long lastPublish = 0;
 
 WiFiClient espClient;
@@ -41,8 +42,9 @@ void setup() {
 
   pinMode(LED_BUILTIN_PIN, OUTPUT);
   // Set up LEDC for buzzer (ESP32 PWM — replaces tone())
-  ledcAttachPin(BUZZER_PIN, BUZZER_CHANNEL);
-  ledcWriteTone(BUZZER_CHANNEL, 0); // silent
+  ledcAttach(BUZZER_PIN, 2000,
+             8); // ESP32 Core v3.x API: attach pin, freq 2kHz, 8-bit resolution
+  ledcWriteTone(BUZZER_PIN, 0); // silent (v3.x uses pin, not channel)
 
   connectWiFi();
 
@@ -84,7 +86,7 @@ void readAndPublishGas() {
 
   // Build JSON payload
   char payload[128];
-  const char* statusStr;
+  const char *statusStr;
   bool isAlert = false;
 
   if (adcValue > GAS_ALERT_THRESHOLD) {
@@ -93,10 +95,10 @@ void readAndPublishGas() {
     // Alert: blink fast + buzzer
     for (int i = 0; i < 3; i++) {
       digitalWrite(LED_BUILTIN_PIN, HIGH);
-      ledcWriteTone(BUZZER_CHANNEL, 2000); // 2kHz beep
+      ledcWriteTone(BUZZER_PIN, 2000); // 2kHz beep
       delay(100);
       digitalWrite(LED_BUILTIN_PIN, LOW);
-      ledcWriteTone(BUZZER_CHANNEL, 0);    // silent
+      ledcWriteTone(BUZZER_PIN, 0); // silent
       delay(100);
     }
   } else if (adcValue > GAS_WARN_THRESHOLD) {
@@ -105,13 +107,12 @@ void readAndPublishGas() {
   } else {
     statusStr = "safe";
     digitalWrite(LED_BUILTIN_PIN, LOW);
-    ledcWriteTone(BUZZER_CHANNEL, 0); // silence buzzer
+    ledcWriteTone(BUZZER_PIN, 0); // silence buzzer
   }
 
   snprintf(payload, sizeof(payload),
-    "{\"value\":%d,\"status\":\"%s\",\"alert\":%s}",
-    adcValue, statusStr, isAlert ? "true" : "false"
-  );
+           "{\"value\":%d,\"status\":\"%s\",\"alert\":%s}", adcValue, statusStr,
+           isAlert ? "true" : "false");
 
   if (mqttClient.publish(MQTT_TOPIC, payload, false)) {
     Serial.printf("[GAS] Published → %s : %s\n", MQTT_TOPIC, payload);
@@ -133,7 +134,8 @@ void connectWiFi() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\n[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("\n[WiFi] Connected! IP: %s\n",
+                  WiFi.localIP().toString().c_str());
   } else {
     Serial.println("\n[WiFi] Connection FAILED — restarting...");
     ESP.restart();
@@ -141,16 +143,20 @@ void connectWiFi() {
 }
 
 void connectMQTT() {
-  // Set Last Will Testament so broker publishes offline status on unexpected disconnect
-  mqttClient.setWill("fw2352/status", "{\"node\":\"esp32_gas\",\"status\":\"offline\"}", false, 0);
+  // LWT: broker auto-publishes this if ESP32 disconnects unexpectedly
+  // setWill() does NOT exist in PubSubClient — pass it into connect() instead
+  const char *willTopic = "fw2352/status";
+  const char *willMsg = "{\"node\":\"esp32_gas\",\"status\":\"offline\"}";
 
   int attempts = 0;
   while (!mqttClient.connected() && attempts < 5) {
     Serial.printf("[MQTT] Connecting as %s...\n", MQTT_CLIENT);
-    if (mqttClient.connect(MQTT_CLIENT)) {
+    // connect(id, user, pass, willTopic, willQos, willRetain, willMsg)
+    if (mqttClient.connect(MQTT_CLIENT, nullptr, nullptr, willTopic, 0, false,
+                           willMsg)) {
       Serial.println("[MQTT] Connected to HiveMQ!");
-      // Publish online status
-      mqttClient.publish("fw2352/status", "{\"node\":\"esp32_gas\",\"status\":\"online\"}");
+      mqttClient.publish("fw2352/status",
+                         "{\"node\":\"esp32_gas\",\"status\":\"online\"}");
     } else {
       Serial.printf("[MQTT] Failed, rc=%d — retry in 3s\n", mqttClient.state());
       delay(3000);

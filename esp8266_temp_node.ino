@@ -12,31 +12,33 @@
  * ================================================
  */
 
+#include <DHT.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-#include <DHT.h>
 
 // ── Config ──
-const char* WIFI_SSID   = "YOUR_WIFI_SSID";
-const char* WIFI_PASS   = "YOUR_WIFI_PASSWORD";
-const char* MQTT_BROKER = "broker.hivemq.com";
-const int   MQTT_PORT   = 1883;
-const char* MQTT_TOPIC  = "fw2352/temp";       // Unique prefix avoids topic collision on public broker
-const char* MQTT_CLIENT = "fw2352_esp8266_temp";
+const char *WIFI_SSID = "Nothing 2a plus";
+const char *WIFI_PASS = "12345678";
+const char *MQTT_BROKER = "broker.hivemq.com";
+const int MQTT_PORT = 1883;
+const char *MQTT_TOPIC =
+    "fw2352/temp"; // Unique prefix avoids topic collision on public broker
+const char *MQTT_CLIENT = "fw2352_esp8266_temp";
 
 // ── DHT Sensor ──
-#define DHTPIN   4        // GPIO4 = D2 on NodeMCU
-#define DHTTYPE  DHT22    // DHT22 measures up to 80°C — required for fire detection
-                          // DHT11 only goes to 50°C, so TEMP_CRITICAL (60°C) would never trigger
+#define DHTPIN 4 // GPIO4 = D2 on NodeMCU
+#define DHTTYPE                                                                \
+  DHT22 // DHT22 measures up to 80°C — required for fire detection
+        // DHT11 only goes to 50°C, so TEMP_CRITICAL (60°C) would never trigger
 DHT dht(DHTPIN, DHTTYPE);
 
 // ── Pins ──
-const int LED_PIN    = LED_BUILTIN;  // D4 / GPIO2 (active LOW on ESP8266)
-const int BUZZER_PIN = 5;            // D1 / GPIO5 (optional)
+const int LED_PIN = LED_BUILTIN; // D4 / GPIO2 (active LOW on ESP8266)
+const int BUZZER_PIN = 5;        // D1 / GPIO5 (optional)
 
 // ── Thresholds ──
 const float TEMP_ELEVATED = 35.0;
-const float TEMP_WARN     = 45.0;
+const float TEMP_WARN = 45.0;
 const float TEMP_CRITICAL = 60.0;
 
 // ── Timing ──
@@ -51,10 +53,10 @@ void setup() {
   Serial.println("\n[FireWatch] ESP8266 Temperature Node Starting...");
 
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);  // Active LOW: HIGH = off
+  digitalWrite(LED_PIN, HIGH); // Active LOW: HIGH = off
 
   dht.begin();
-  delay(2000);  // DHT sensor warm-up
+  delay(2000); // DHT sensor warm-up
 
   connectWiFi();
 
@@ -66,8 +68,10 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) connectWiFi();
-  if (!mqttClient.connected()) connectMQTT();
+  if (WiFi.status() != WL_CONNECTED)
+    connectWiFi();
+  if (!mqttClient.connected())
+    connectMQTT();
   mqttClient.loop();
 
   unsigned long now = millis();
@@ -78,7 +82,7 @@ void loop() {
 }
 
 void readAndPublishTemp() {
-  float temp = dht.readTemperature();     // Celsius
+  float temp = dht.readTemperature(); // Celsius
   float humidity = dht.readHumidity();
 
   // Handle sensor read failure
@@ -87,10 +91,11 @@ void readAndPublishTemp() {
     return;
   }
 
-  Serial.printf("[TEMP] Temperature: %.1f°C | Humidity: %.1f%%\n", temp, humidity);
+  Serial.printf("[TEMP] Temperature: %.1f°C | Humidity: %.1f%%\n", temp,
+                humidity);
 
   // Determine status
-  const char* statusStr;
+  const char *statusStr;
   bool alertFlag = false;
 
   if (temp >= TEMP_CRITICAL) {
@@ -98,29 +103,29 @@ void readAndPublishTemp() {
     alertFlag = true;
     // Rapid beep + blink
     for (int i = 0; i < 5; i++) {
-      digitalWrite(LED_PIN, LOW);   // on
+      digitalWrite(LED_PIN, LOW); // on
       delay(80);
-      digitalWrite(LED_PIN, HIGH);  // off
+      digitalWrite(LED_PIN, HIGH); // off
       delay(80);
     }
   } else if (temp >= TEMP_WARN) {
     statusStr = "high";
     alertFlag = true;
-    digitalWrite(LED_PIN, LOW);  // steady on
+    digitalWrite(LED_PIN, LOW); // steady on
   } else if (temp >= TEMP_ELEVATED) {
     statusStr = "elevated";
     digitalWrite(LED_PIN, LOW);
   } else {
     statusStr = "normal";
-    digitalWrite(LED_PIN, HIGH);  // off
+    digitalWrite(LED_PIN, HIGH); // off
   }
 
   // Build JSON
   char payload[160];
-  snprintf(payload, sizeof(payload),
-    "{\"temperature\":%.1f,\"humidity\":%.1f,\"status\":\"%s\",\"alert\":%s}",
-    temp, humidity, statusStr, alertFlag ? "true" : "false"
-  );
+  snprintf(
+      payload, sizeof(payload),
+      "{\"temperature\":%.1f,\"humidity\":%.1f,\"status\":\"%s\",\"alert\":%s}",
+      temp, humidity, statusStr, alertFlag ? "true" : "false");
 
   if (mqttClient.publish(MQTT_TOPIC, payload, false)) {
     Serial.printf("[TEMP] Published → %s : %s\n", MQTT_TOPIC, payload);
@@ -143,7 +148,7 @@ void connectWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("\n[WiFi] Connected! IP: %s RSSI: %ddBm\n",
-      WiFi.localIP().toString().c_str(), WiFi.RSSI());
+                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
   } else {
     Serial.println("\n[WiFi] FAILED — restarting");
     ESP.restart();
@@ -151,15 +156,20 @@ void connectWiFi() {
 }
 
 void connectMQTT() {
-  // Set Last Will Testament so broker publishes offline status on unexpected disconnect
-  mqttClient.setWill("fw2352/status", "{\"node\":\"esp8266_temp\",\"status\":\"offline\"}", false, 0);
+  // LWT: broker auto-publishes this if ESP8266 disconnects unexpectedly
+  // setWill() does NOT exist in PubSubClient — pass it into connect() instead
+  const char *willTopic = "fw2352/status";
+  const char *willMsg = "{\"node\":\"esp8266_temp\",\"status\":\"offline\"}";
 
   int attempts = 0;
   while (!mqttClient.connected() && attempts < 5) {
     Serial.printf("[MQTT] Connecting as %s...\n", MQTT_CLIENT);
-    if (mqttClient.connect(MQTT_CLIENT)) {
+    // connect(id, user, pass, willTopic, willQos, willRetain, willMsg)
+    if (mqttClient.connect(MQTT_CLIENT, nullptr, nullptr, willTopic, 0, false,
+                           willMsg)) {
       Serial.println("[MQTT] Connected to HiveMQ!");
-      mqttClient.publish("fw2352/status", "{\"node\":\"esp8266_temp\",\"status\":\"online\"}");
+      mqttClient.publish("fw2352/status",
+                         "{\"node\":\"esp8266_temp\",\"status\":\"online\"}");
     } else {
       Serial.printf("[MQTT] Failed rc=%d — retry in 3s\n", mqttClient.state());
       delay(3000);
