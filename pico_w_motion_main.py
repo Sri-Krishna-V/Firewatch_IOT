@@ -19,8 +19,8 @@ from machine import Pin
 from umqtt.simple import MQTTClient
 
 # ── Config ──────────────────────────────────────
-WIFI_SSID = "Nothing 2a plus"
-WIFI_PASS = "12345678"
+WIFI_SSID = "Surej"
+WIFI_PASS = "77665544"
 MQTT_BROKER = b"broker.hivemq.com"
 MQTT_PORT = 1883
 # Unique prefix avoids topic collision on public broker
@@ -44,6 +44,19 @@ last_publish = 0
 motion_count = 0  # Initialize motion counter
 DEBOUNCE_MS = 500   # Ignore re-triggers within 500ms
 PUBLISH_INTERVAL = 2   # seconds (heartbeat even if no motion)
+
+# ── Edge Computation: Sliding-window frequency ────────────────────────────
+FREQ_WINDOW_SEC = 60          # rolling 60-second window for event counting
+FREQ_WINDOW_MAX = 10          # cap list at 10 timestamps to bound memory
+motion_timestamps = []        # list of ticks_ms for recent confirmed detections
+
+# ── Edge Computation: Occupied-state tracking ───────────────────────────
+OCCUPIED_TIMEOUT_SEC = 300    # 5 min of silence → zone considered idle
+last_motion_ticks = 0      # ticks_ms of most-recent confirmed detection
+last_occupied_state = False  # previous computed occupancy (for transitions)
+
+# ── Edge Computation: Suppress duplicate "clear" publishes ────────────────
+last_published_detected = None  # last motion boolean we actually published
 
 # IRQ-safe flag: set by interrupt, consumed by main loop
 pending_motion = None  # True = detected, False = ended, None = no event
@@ -169,6 +182,7 @@ def connect_mqtt():
         })
         client.publish(STATUS_TOPIC, status.encode())
         log("MQTT", f"Published online status to {STATUS_TOPIC.decode()}")
+        flush_queue()  # publish any payloads buffered while offline
         led.on()
         return True
     except Exception as e:
@@ -178,20 +192,55 @@ def connect_mqtt():
         return False
 
 # ── Publish payload ───────────────────────────────
+# Includes edge-computed fields: freq, activity level, occupancy, risk score.
 
 
 def publish_motion(detected: bool, count: int):
+    global motion_timestamps, last_motion_ticks
+
+    # Prune events older than FREQ_WINDOW_SEC from the sliding window
+    now_ms = time.ticks_ms()
+    cutoff = time.ticks_add(now_ms, -(FREQ_WINDOW_SEC * 1000))
+    motion_timestamps = [t for t in motion_timestamps
+                         if time.ticks_diff(t, cutoff) > 0]
+    freq = len(motion_timestamps)
+
+    # Activity level classification
+    if freq == 0:
+        activity = "idle"
+    elif freq <= 2:
+        activity = "low"
+    elif freq <= 5:
+        activity = "moderate"
+    else:
+        activity = "high"
+
+    # Occupied: last confirmed detection within OCCUPIED_TIMEOUT_SEC
+    if last_motion_ticks > 0:
+        secs_since = time.ticks_diff(now_ms, last_motion_ticks) // 1000
+        occupied = secs_since < OCCUPIED_TIMEOUT_SEC
+    else:
+        occupied = False
+
+    # Risk score: each event/min adds 20 points, capped at 100
+    risk = min(freq * 20, 100)
+
     payload = ujson.dumps({
-        "motion": detected,
-        "count": count,
-        "status": "detected" if detected else "clear"
+        "motion":   detected,
+        "count":    count,
+        "status":   "detected" if detected else "clear",
+        "freq":     freq,
+        "activity": activity,
+        "occupied": occupied,
+        "risk":     risk
     })
     try:
         client.publish(MQTT_TOPIC, payload.encode())
         log("PUB", f"{MQTT_TOPIC.decode()} ← {payload}")
     except Exception as e:
-        log("ERR", f"publish_motion failed: {e}")
+        log("ERR", f"publish_motion failed: {e} — queuing")
         sys.print_exception(e)
+        queue_payload(payload)
 
 # ── PIR Interrupt Handler ─────────────────────────
 # IMPORTANT: only set a flag here — never do socket I/O inside an ISR.
@@ -216,21 +265,24 @@ def heartbeat():
     try:
         client.ping()
         log("HB", "PINGREQ sent")
-        # Also publish last known motion state so subscribers stay in sync
-        publish_motion(pending_motion is True, motion_count)
+        # Re-publish last known state so subscribers stay in sync
+        # Use last_published_detected (authoritative) rather than pending_motion
+        publish_motion(last_published_detected is True, motion_count)
         dump_status()  # prints full state — paste this when reporting an issue
     except Exception as e:
         log("ERR", f"Heartbeat/ping failed: {e}")
         sys.print_exception(e)
         log("HB", "Attempting reconnect...")
         connect_wifi()
-        connect_mqtt()
+        if connect_mqtt():
+            flush_queue()
 
 # ── Main ──────────────────────────────────────────
 
 
 def main():
     global pending_motion, motion_count
+    global last_motion_ticks, last_occupied_state, last_published_detected
 
     log("BOOT", "═" * 44)
     log("BOOT", " FireWatch IoT — Pico W Motion Node")
@@ -289,18 +341,43 @@ def main():
                     pending_motion = None
                     if detected:
                         motion_count += 1
+                        # Record timestamp for rolling frequency window
+                        now_ts = time.ticks_ms()
+                        motion_timestamps.append(now_ts)
+                        if len(motion_timestamps) > FREQ_WINDOW_MAX:
+                            motion_timestamps.pop(0)
+                        last_motion_ticks = now_ts
                         log("PIR",
                             f"*** MOTION DETECTED  event=#{motion_count} ***")
                         led.on()
                         ext_led.on()   # external LED on
+                        last_published_detected = True
+                        publish_motion(True, motion_count)
                     else:
-                        log("PIR", "Motion ended — area clear")
+                        # Suppress duplicate "clear" — only publish on state transition
+                        if last_published_detected is True:
+                            log("PIR", "Motion ended — publishing clear")
+                            last_published_detected = False
+                            publish_motion(False, motion_count)
+                        else:
+                            log("PIR", "Motion ended — clear already published, suppressing")
                         led.off()
                         ext_led.off()  # external LED off
-                    publish_motion(detected, motion_count)
                 else:
                     pending_motion = None  # Clear event silently when disarmed
                     log("PIR", "Motion event ignored — system DISARMED")
+
+            # Occupancy state-transition check: publish once when zone flips idle↔occupied
+            _now_ms = time.ticks_ms()
+            if last_motion_ticks > 0:
+                _secs = time.ticks_diff(_now_ms, last_motion_ticks) // 1000
+                _occ = _secs < OCCUPIED_TIMEOUT_SEC
+            else:
+                _occ = False
+            if _occ != last_occupied_state:
+                last_occupied_state = _occ
+                log("OCC", f"Occupancy → {'occupied' if _occ else 'idle'}")
+                publish_motion(last_published_detected is True, motion_count)
 
             # Keep-alive + state sync every 15 iterations (~30s, well within 120s keepalive)
             if hb_counter % 15 == 0:
@@ -320,7 +397,8 @@ def main():
             log("ERR", "Waiting 3s then attempting full reconnect...")
             time.sleep(3)
             connect_wifi()
-            connect_mqtt()
+            if connect_mqtt():
+                flush_queue()
 
 
 if __name__ == "__main__":

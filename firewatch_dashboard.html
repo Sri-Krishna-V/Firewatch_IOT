@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=d evice-width, initial-scale=1.0">
   <title>FireWatch IoT — Real-Time Safety Monitor</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
   <style>
@@ -509,6 +509,25 @@
       bottom: 0;
       width: 20px;
       background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4));
+    }
+
+    /* ── EDGE COMPUTATION META ROW ── */
+    .edge-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: rgba(0, 212, 255, 0.04);
+      border: 1px solid var(--border-dim);
+      border-radius: 4px;
+      font-size: 11px;
+      font-family: 'Share Tech Mono', monospace;
+      color: var(--text-secondary);
+    }
+    .edge-meta span {
+      white-space: nowrap;
+      letter-spacing: 0.04em;
     }
 
     /* ── LOG PANEL ── */
@@ -1166,6 +1185,42 @@
       </div>
     </div>
 
+    <!-- BROKER / CONNECTION CONFIG PANEL -->
+    <div class="tg-panel">
+      <div class="tg-header" onclick="toggleConnPanel()">
+        <span>🔌 &nbsp;CONNECTION CONFIG &nbsp;—&nbsp; MQTT BROKER &amp; TOPIC PREFIX</span>
+        <span id="conn-arrow">▼</span>
+      </div>
+      <div class="tg-body" id="conn-body">
+        <div class="tg-rows-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
+          <div class="tg-row">
+            <label>BROKER HOST / IP ADDRESS</label>
+            <input id="conn-broker" type="text" placeholder="broker.hivemq.com" autocomplete="off" />
+          </div>
+          <div class="tg-row">
+            <label>WSS PORT (dashboard)</label>
+            <input id="conn-wssport" type="text" placeholder="8884" />
+          </div>
+          <div class="tg-row">
+            <label>TCP PORT (firmware)</label>
+            <input id="conn-tcpport" type="text" placeholder="1883" />
+          </div>
+          <div class="tg-row">
+            <label>TOPIC PREFIX</label>
+            <input id="conn-prefix" type="text" placeholder="fw2352" />
+          </div>
+        </div>
+        <div class="tg-actions">
+          <button class="tg-btn save-btn" onclick="saveConnConfig()">💾 SAVE &amp; RECONNECT</button>
+        </div>
+        <div id="conn-status" class="tg-status"></div>
+        <div style="font-size:10px;color:var(--text-secondary);letter-spacing:1px;margin-top:6px;line-height:1.6">
+          Local Mosquitto: host = <strong>192.168.x.x</strong> &nbsp;WSS port = <strong>9001</strong>.
+          Firmware devices need their broker updated separately via their own config portal / config.json.
+        </div>
+      </div>
+    </div>
+
     <!-- ALERT BANNER -->
     <div id="alert-banner">
       <span>⚡</span>
@@ -1199,7 +1254,7 @@
         <div class="corner-br"></div>
         <div class="card-header">
           <div>
-            <div class="card-node">ESP32 Node · MQ-2/MQ-5 Sensor</div>
+            <div class="card-node">ESP32 Node · MQ-6 Sensor</div>
             <div class="card-title">GAS DETECTION</div>
             <div class="card-topic">fw2352/gas</div>
           </div>
@@ -1246,6 +1301,10 @@
 
         <div class="status-badge safe" id="badge-gas">
           <span>●</span> SAFE — NO GAS DETECTED
+        </div>
+        <div class="edge-meta" id="gas-edge">
+          <span id="gas-trend">TREND: —</span>
+          <span id="gas-risk">RISK: —</span>
         </div>
       </div>
 
@@ -1299,6 +1358,11 @@
         <div class="status-badge safe" id="badge-temp">
           <span>●</span> NORMAL TEMPERATURE
         </div>
+        <div class="edge-meta" id="temp-edge">
+          <span id="temp-heat-index">HEAT IDX: —</span>
+          <span id="temp-trend">TREND: —</span>
+          <span id="temp-risk">RISK: —</span>
+        </div>
       </div>
 
       <!-- MOTION CARD -->
@@ -1331,6 +1395,12 @@
         <div class="status-badge safe" id="badge-motion">
           <span>●</span> NO MOTION DETECTED
         </div>
+        <div class="edge-meta" id="motion-edge">
+          <span id="motion-freq">FREQ: —</span>
+          <span id="motion-activity">ACTIVITY: —</span>
+          <span id="motion-occupied">OCCUPIED: —</span>
+          <span id="motion-risk">RISK: —</span>
+        </div>
       </div>
 
     </div>
@@ -1358,7 +1428,7 @@
         <div class="stats-title">SESSION STATS</div>
         <div class="stat-row">
           <span class="stat-label">BROKER</span>
-          <span class="stat-value">broker.hivemq.com</span>
+          <span class="stat-value" id="stat-broker">broker.hivemq.com</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">MESSAGES RX</span>
@@ -1391,7 +1461,7 @@
     <!-- FOOTER -->
     <footer>
       <div class="broker-info">
-        <span>MQTT: broker.hivemq.com:8884 (WSS)</span>
+        <span id="footer-broker">MQTT: broker.hivemq.com:8884 (WSS)</span>
         <span>QoS: 1</span>
         <span>TOPICS: fw2352/gas · fw2352/temp · fw2352/motion</span>
       </div>
@@ -1405,10 +1475,59 @@
     //  FIREWATCH IoT Dashboard — MQTT WebSocket
     // ─────────────────────────────────────────────
 
-    const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
-    const TOPICS = ['fw2352/gas', 'fw2352/temp', 'fw2352/motion', 'fw2352/status'];
-    const CMD_MOTION_TOPIC = 'fw2352/cmd/motion';  // arm / disarm Pico W
-    const CONTROL_TOPIC   = 'fw2352/control';       // reset signal to ESP32 / ESP8266
+    const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';  // kept for demo sim
+
+    // ── Connection config helpers (persisted in localStorage) ─────────────────
+    function loadConnConfig() {
+      return JSON.parse(localStorage.getItem('fw_conn_config') || 'null') || {
+        brokerHost:  'broker.hivemq.com',
+        wssPort:     '8884',
+        tcpPort:     '1883',
+        topicPrefix: 'fw2352'
+      };
+    }
+    function saveConnConfig() {
+      const c = {
+        brokerHost:  $('conn-broker').value.trim()  || 'broker.hivemq.com',
+        wssPort:     $('conn-wssport').value.trim() || '8884',
+        tcpPort:     $('conn-tcpport').value.trim() || '1883',
+        topicPrefix: $('conn-prefix').value.trim()  || 'fw2352'
+      };
+      localStorage.setItem('fw_conn_config', JSON.stringify(c));
+      const st = $('conn-status');
+      st.textContent = '✔ Saved — reconnecting...';
+      st.className = 'tg-status ok';
+      if (client) { try { client.end(true); } catch (_) {} }
+      setTimeout(() => { connectMQTT(); st.textContent = ''; }, 400);
+    }
+    function toggleConnPanel() {
+      const body = $('conn-body'), arrow = $('conn-arrow');
+      arrow.textContent = body.classList.toggle('open') ? '▲' : '▼';
+    }
+    function applyConnConfig() {
+      const c = loadConnConfig();
+      if ($('conn-broker'))  $('conn-broker').value  = c.brokerHost;
+      if ($('conn-wssport')) $('conn-wssport').value = c.wssPort;
+      if ($('conn-tcpport')) $('conn-tcpport').value = c.tcpPort;
+      if ($('conn-prefix'))  $('conn-prefix').value  = c.topicPrefix;
+    }
+    function buildConfig() {
+      const c = loadConnConfig();
+      const pfx = c.topicPrefix;
+      return {
+        brokerWs:       `wss://${c.brokerHost}:${c.wssPort}/mqtt`,
+        topics:         [`${pfx}/gas`, `${pfx}/temp`, `${pfx}/motion`, `${pfx}/status`],
+        cmdMotionTopic: `${pfx}/cmd/motion`,
+        controlTopic:   `${pfx}/control`,
+        brokerHost:     c.brokerHost,
+        wssPort:        c.wssPort
+      };
+    }
+    // Derive initial module-level constants from stored config
+    const _ic             = buildConfig();
+    const TOPICS          = _ic.topics;
+    const CMD_MOTION_TOPIC = _ic.cmdMotionTopic;
+    const CONTROL_TOPIC   = _ic.controlTopic;
 
     // ── Telegram config (persisted in localStorage)
     let tgConfig = JSON.parse(localStorage.getItem('fw_tg_config') || 'null') || { token: '', chatId: '', location: 'FireWatch Building' };
@@ -1437,11 +1556,17 @@
     // ── MQTT Connect
     function connectMQTT() {
       setConnStatus('connecting', 'CONNECTING...');
+      const cfg = buildConfig();
+
+      // Update dynamic labels that show the active broker
+      if ($('stat-broker'))   $('stat-broker').textContent   = cfg.brokerHost;
+      if ($('footer-broker')) $('footer-broker').textContent =
+        `MQTT: ${cfg.brokerHost}:${cfg.wssPort} (WSS)`;
 
       const clientId = 'firewatch_' + Math.random().toString(36).substr(2, 8);
 
       try {
-        client = mqtt.connect(BROKER_WS, {
+        client = mqtt.connect(cfg.brokerWs, {
           clientId,
           keepalive: 60,
           reconnectPeriod: 3000,
@@ -1452,11 +1577,11 @@
         client.on('connect', () => {
           state.connected = true;
           setConnStatus('connected', 'CONNECTED');
-          TOPICS.forEach(t => client.subscribe(t, { qos: 1 }));
+          cfg.topics.forEach(t => client.subscribe(t, { qos: 1 }));
           // Stop demo simulator if it was running
           if (simTimer) { clearInterval(simTimer); simTimer = null; simMode = false; }
-          addLog('SYS', 'Connected to HiveMQ broker', 'safe');
-          addLog('SYS', 'Subscribed: ' + TOPICS.join(', '), 'safe');
+          addLog('SYS', `Connected to ${cfg.brokerHost}`, 'safe');
+          addLog('SYS', 'Subscribed: ' + cfg.topics.join(', '), 'safe');
         });
 
         client.on('message', (topic, message) => {
@@ -1497,10 +1622,11 @@
         value = raw;
       }
 
-      if (topic === 'fw2352/gas') handleGas(value, raw);
-      else if (topic === 'fw2352/temp') handleTemp(value, raw);
-      else if (topic === 'fw2352/motion') handleMotion(value, raw);
-      else if (topic === 'fw2352/status') handleStatus(value, raw);
+      const _pfx = loadConnConfig().topicPrefix;
+      if (topic === _pfx + '/gas') handleGas(value, raw);
+      else if (topic === _pfx + '/temp') handleTemp(value, raw);
+      else if (topic === _pfx + '/motion') handleMotion(value, raw);
+      else if (topic === _pfx + '/status') handleStatus(value, raw);
 
       checkGlobalAlert();
     }
@@ -1508,7 +1634,13 @@
     function handleGas(value, raw) {
       let numVal = 0;
       let forceAlert = false;
-      let forceStatus = null;
+      // Edge computation fields from ESP32
+      let trend = '—';
+      let riskScore = null;
+      // deviceStatus is set when the ESP32 sends a full JSON payload;
+      // we trust it directly instead of re-computing thresholds on the dashboard.
+      let deviceStatus = null;
+
       if (typeof value === 'number') {
         numVal = value;
       } else if (typeof value === 'string') {
@@ -1518,17 +1650,21 @@
         else numVal = parseFloat(value) || 0;
       } else if (typeof value === 'object') {
         numVal = value.value || value.ppm || value.adc || 0;
-        // Trust the ESP32's own alert decision — avoids threshold mismatch bugs
-        if (value.alert === true)  forceAlert = true;
-        if (value.alert === false) forceStatus = 'safe';
+        if (value.alert === true) forceAlert = true;
+        // Trust the ESP32's own status string — avoids the alert===false
+        // masking warnings that the device correctly computed on-edge.
+        if (value.status) deviceStatus = value.status.toLowerCase();
+        if (value.trend)  trend        = value.trend.toUpperCase();
+        if (value.risk != null) riskScore = value.risk;
       }
 
       let level, statusText, alertFlag = false;
-      if (forceAlert || numVal > 400) {
+      if (forceAlert || deviceStatus === 'leak' || numVal > 400) {
         level = 'danger'; statusText = '⚠ GAS LEAK DETECTED!'; alertFlag = true;
         if (!state.gas.alert) { state.gasAlerts++; $('stat-gas-alerts').textContent = state.gasAlerts; $('stat-gas-alerts').className = 'stat-value alert'; }
-      } else if (!forceAlert && forceStatus !== 'safe' && numVal > 200) {
-        level = 'warn'; statusText = '⚡ WARNING: Elevated Gas';
+      } else if (deviceStatus === 'warning' || (!deviceStatus && (numVal > 200 || trend === 'RISING'))) {
+        // Use device status when available; fall back to threshold for raw scalar payloads
+        level = 'warn'; statusText = '⚡ WARNING: Elevated Gas' + (trend === 'RISING' ? ' ↑' : '');
       } else {
         level = 'safe'; statusText = '✔ SAFE — No Gas Detected';
       }
@@ -1553,23 +1689,48 @@
       // Progress bar
       setBar('gas-bar', pct * 100, level);
 
-      addLog('fw2352/gas', `ADC=${numVal.toFixed(0)} — ${statusText}`, level);
+      // Edge meta
+      const trendEl = $('gas-trend');
+      trendEl.textContent = 'TREND: ' + trend;
+      trendEl.style.color = trend === 'RISING' ? 'var(--accent-orange)' : 'var(--text-secondary)';
+      if (riskScore !== null) {
+        const riskEl = $('gas-risk');
+        riskEl.textContent = 'RISK: ' + riskScore + '/100';
+        riskEl.style.color = riskScore > 60 ? 'var(--danger)' : riskScore > 30 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+      }
+
+      addLog('fw2352/gas', `ADC=${numVal.toFixed(0)} risk=${riskScore ?? '—'} trend=${trend} — ${statusText}`, level);
     }
 
     function handleTemp(value, raw) {
       let tempVal = 0;
-      if (typeof value === 'number') tempVal = value;
-      else if (typeof value === 'string') tempVal = parseFloat(value) || 0;
-      else if (typeof value === 'object') tempVal = value.temperature || value.temp || value.value || 0;
+      // Edge computation fields from ESP8266
+      let heatIndex = null;
+      let trend     = '—';
+      let riskScore = null;
+
+      if (typeof value === 'number') {
+        tempVal = value;
+      } else if (typeof value === 'string') {
+        tempVal = parseFloat(value) || 0;
+      } else if (typeof value === 'object') {
+        tempVal   = value.temperature || value.temp || value.value || 0;
+        if (value.heat_index != null) heatIndex = value.heat_index;
+        if (value.trend)              trend     = value.trend.toUpperCase();
+        if (value.risk != null)       riskScore = value.risk;
+      }
+
+      // Use heat index for threshold when available — more meaningful for fire risk
+      const effectiveTemp = (heatIndex !== null && heatIndex > tempVal) ? heatIndex : tempVal;
 
       let level, statusText, alertFlag = false;
-      if (tempVal >= 45) {
+      if (effectiveTemp >= 45 || (trend === 'RISING' && effectiveTemp >= 40)) {
         level = 'danger'; statusText = '🔥 FIRE ALERT! CRITICAL TEMP'; alertFlag = true;
         if (!state.temp.alert) { state.tempAlerts++; $('stat-temp-alerts').textContent = state.tempAlerts; $('stat-temp-alerts').className = 'stat-value alert'; }
-      } else if (tempVal >= 38) {
+      } else if (effectiveTemp >= 38) {
         level = 'danger'; statusText = '⚠ HIGH TEMP WARNING'; alertFlag = true;
-      } else if (tempVal >= 35) {
-        level = 'warn'; statusText = '⚡ ELEVATED TEMPERATURE';
+      } else if (effectiveTemp >= 35 || trend === 'RISING') {
+        level = 'warn'; statusText = '⚡ ELEVATED TEMPERATURE' + (trend === 'RISING' ? ' ↑' : '');
       } else {
         level = 'safe'; statusText = '✔ NORMAL TEMPERATURE';
       }
@@ -1595,7 +1756,21 @@
       if (state.tempHistory.length > 30) state.tempHistory.shift();
       drawSparkline();
 
-      addLog('fw2352/temp', `${tempVal.toFixed(1)}°C — ${statusText}`, level);
+      // Edge meta
+      const hiEl = $('temp-heat-index');
+      hiEl.textContent = heatIndex !== null ? `HEAT IDX: ${heatIndex.toFixed(1)}°C` : 'HEAT IDX: —';
+      hiEl.style.color  = heatIndex !== null && heatIndex > 38 ? 'var(--danger)' :
+                          heatIndex !== null && heatIndex > 30 ? 'var(--accent-yellow)' : 'var(--text-secondary)';
+      const trEl = $('temp-trend');
+      trEl.textContent = 'TREND: ' + trend;
+      trEl.style.color  = trend === 'RISING' ? 'var(--accent-orange)' : 'var(--text-secondary)';
+      if (riskScore !== null) {
+        const riskEl = $('temp-risk');
+        riskEl.textContent = 'RISK: ' + riskScore + '/100';
+        riskEl.style.color  = riskScore > 60 ? 'var(--danger)' : riskScore > 30 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+      }
+
+      addLog('fw2352/temp', `${tempVal.toFixed(1)}°C hi=${heatIndex != null ? heatIndex.toFixed(1) : '—'} risk=${riskScore ?? '—'} trend=${trend} — ${statusText}`, level);
     }
 
     // ── Node online/offline status ─────────────────────────────────────
@@ -1626,6 +1801,12 @@
 
     function handleMotion(value, raw) {
       let detected = false;
+      // Edge computation fields from Pico W
+      let freq     = null;
+      let activity = null;
+      let occupied = null;
+      let riskScore = null;
+
       if (typeof value === 'boolean') detected = value;
       else if (typeof value === 'number') detected = value === 1;
       else if (typeof value === 'string') {
@@ -1633,6 +1814,10 @@
         detected = ['1', 'true', 'motion', 'detected', 'yes'].includes(lower);
       } else if (typeof value === 'object') {
         detected = !!(value.motion || value.detected || value.value);
+        if (value.freq     != null) freq     = value.freq;
+        if (value.activity != null) activity = value.activity.toUpperCase();
+        if (value.occupied != null) occupied = value.occupied;
+        if (value.risk     != null) riskScore = value.risk;
       }
 
       // Use count from payload if available (survives Pico W reboots and page refreshes)
@@ -1670,7 +1855,30 @@
         blip.classList.add('active');
       }
 
-      addLog('fw2352/motion', detected ? 'MOTION DETECTED! PIR triggered' : 'Motion ended — area clear', level);
+      // Edge meta
+      if (freq !== null) {
+        const freqEl = $('motion-freq');
+        freqEl.textContent = `FREQ: ${freq}/min`;
+        freqEl.style.color = freq > 5 ? 'var(--danger)' : freq > 2 ? 'var(--accent-yellow)' : 'var(--text-secondary)';
+      }
+      if (activity !== null) {
+        const actEl = $('motion-activity');
+        actEl.textContent = 'ACTIVITY: ' + activity;
+        const actColors = { IDLE: 'var(--text-secondary)', LOW: 'var(--accent-cyan)', MODERATE: 'var(--accent-yellow)', HIGH: 'var(--danger)' };
+        actEl.style.color = actColors[activity] || 'var(--text-secondary)';
+      }
+      if (occupied !== null) {
+        const occEl = $('motion-occupied');
+        occEl.textContent = 'OCCUPIED: ' + (occupied ? 'YES' : 'NO');
+        occEl.style.color  = occupied ? 'var(--accent-yellow)' : 'var(--text-secondary)';
+      }
+      if (riskScore !== null) {
+        const riskEl = $('motion-risk');
+        riskEl.textContent = 'RISK: ' + riskScore + '/100';
+        riskEl.style.color  = riskScore > 60 ? 'var(--danger)' : riskScore > 30 ? 'var(--accent-yellow)' : 'var(--accent-green)';
+      }
+
+      addLog('fw2352/motion', `${detected ? 'MOTION!' : 'CLEAR'} activity=${activity ?? '—'} freq=${freq ?? '—'} occupied=${occupied ?? '—'} risk=${riskScore ?? '—'}`, level);
     }
 
     // ── Global alert banner
@@ -2042,6 +2250,7 @@ _Connection to FireWatch IoT confirmed._`;
 
     // Start
     connectMQTT();
+    applyConnConfig();   // populate connection panel inputs from localStorage
     setInterval(updateClock, 1000);
     updateClock();
     addLog('SYS', 'FireWatch IoT Dashboard initializing...', 'safe');
