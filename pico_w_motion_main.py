@@ -19,8 +19,8 @@ from machine import Pin
 from umqtt.simple import MQTTClient
 
 # ── Config ──────────────────────────────────────
-WIFI_SSID = "Nothing 2a plus"
-WIFI_PASS = "12345678"
+WIFI_SSID = "Surej"
+WIFI_PASS = "77665544"
 MQTT_BROKER = b"broker.hivemq.com"
 MQTT_PORT = 1883
 # Unique prefix avoids topic collision on public broker
@@ -182,6 +182,7 @@ def connect_mqtt():
         })
         client.publish(STATUS_TOPIC, status.encode())
         log("MQTT", f"Published online status to {STATUS_TOPIC.decode()}")
+        flush_queue()  # publish any payloads buffered while offline
         led.on()
         return True
     except Exception as e:
@@ -237,8 +238,9 @@ def publish_motion(detected: bool, count: int):
         client.publish(MQTT_TOPIC, payload.encode())
         log("PUB", f"{MQTT_TOPIC.decode()} ← {payload}")
     except Exception as e:
-        log("ERR", f"publish_motion failed: {e}")
+        log("ERR", f"publish_motion failed: {e} — queuing")
         sys.print_exception(e)
+        queue_payload(payload)
 
 # ── PIR Interrupt Handler ─────────────────────────
 # IMPORTANT: only set a flag here — never do socket I/O inside an ISR.
@@ -272,7 +274,8 @@ def heartbeat():
         sys.print_exception(e)
         log("HB", "Attempting reconnect...")
         connect_wifi()
-        connect_mqtt()
+        if connect_mqtt():
+            flush_queue()
 
 # ── Main ──────────────────────────────────────────
 
@@ -394,7 +397,8 @@ def main():
             log("ERR", "Waiting 3s then attempting full reconnect...")
             time.sleep(3)
             connect_wifi()
-            connect_mqtt()
+            if connect_mqtt():
+                flush_queue()
 
 
 if __name__ == "__main__":

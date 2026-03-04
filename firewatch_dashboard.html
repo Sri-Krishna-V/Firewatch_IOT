@@ -1185,6 +1185,42 @@
       </div>
     </div>
 
+    <!-- BROKER / CONNECTION CONFIG PANEL -->
+    <div class="tg-panel">
+      <div class="tg-header" onclick="toggleConnPanel()">
+        <span>🔌 &nbsp;CONNECTION CONFIG &nbsp;—&nbsp; MQTT BROKER &amp; TOPIC PREFIX</span>
+        <span id="conn-arrow">▼</span>
+      </div>
+      <div class="tg-body" id="conn-body">
+        <div class="tg-rows-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
+          <div class="tg-row">
+            <label>BROKER HOST / IP ADDRESS</label>
+            <input id="conn-broker" type="text" placeholder="broker.hivemq.com" autocomplete="off" />
+          </div>
+          <div class="tg-row">
+            <label>WSS PORT (dashboard)</label>
+            <input id="conn-wssport" type="text" placeholder="8884" />
+          </div>
+          <div class="tg-row">
+            <label>TCP PORT (firmware)</label>
+            <input id="conn-tcpport" type="text" placeholder="1883" />
+          </div>
+          <div class="tg-row">
+            <label>TOPIC PREFIX</label>
+            <input id="conn-prefix" type="text" placeholder="fw2352" />
+          </div>
+        </div>
+        <div class="tg-actions">
+          <button class="tg-btn save-btn" onclick="saveConnConfig()">💾 SAVE &amp; RECONNECT</button>
+        </div>
+        <div id="conn-status" class="tg-status"></div>
+        <div style="font-size:10px;color:var(--text-secondary);letter-spacing:1px;margin-top:6px;line-height:1.6">
+          Local Mosquitto: host = <strong>192.168.x.x</strong> &nbsp;WSS port = <strong>9001</strong>.
+          Firmware devices need their broker updated separately via their own config portal / config.json.
+        </div>
+      </div>
+    </div>
+
     <!-- ALERT BANNER -->
     <div id="alert-banner">
       <span>⚡</span>
@@ -1392,7 +1428,7 @@
         <div class="stats-title">SESSION STATS</div>
         <div class="stat-row">
           <span class="stat-label">BROKER</span>
-          <span class="stat-value">broker.hivemq.com</span>
+          <span class="stat-value" id="stat-broker">broker.hivemq.com</span>
         </div>
         <div class="stat-row">
           <span class="stat-label">MESSAGES RX</span>
@@ -1425,7 +1461,7 @@
     <!-- FOOTER -->
     <footer>
       <div class="broker-info">
-        <span>MQTT: broker.hivemq.com:8884 (WSS)</span>
+        <span id="footer-broker">MQTT: broker.hivemq.com:8884 (WSS)</span>
         <span>QoS: 1</span>
         <span>TOPICS: fw2352/gas · fw2352/temp · fw2352/motion</span>
       </div>
@@ -1439,10 +1475,59 @@
     //  FIREWATCH IoT Dashboard — MQTT WebSocket
     // ─────────────────────────────────────────────
 
-    const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
-    const TOPICS = ['fw2352/gas', 'fw2352/temp', 'fw2352/motion', 'fw2352/status'];
-    const CMD_MOTION_TOPIC = 'fw2352/cmd/motion';  // arm / disarm Pico W
-    const CONTROL_TOPIC   = 'fw2352/control';       // reset signal to ESP32 / ESP8266
+    const BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';  // kept for demo sim
+
+    // ── Connection config helpers (persisted in localStorage) ─────────────────
+    function loadConnConfig() {
+      return JSON.parse(localStorage.getItem('fw_conn_config') || 'null') || {
+        brokerHost:  'broker.hivemq.com',
+        wssPort:     '8884',
+        tcpPort:     '1883',
+        topicPrefix: 'fw2352'
+      };
+    }
+    function saveConnConfig() {
+      const c = {
+        brokerHost:  $('conn-broker').value.trim()  || 'broker.hivemq.com',
+        wssPort:     $('conn-wssport').value.trim() || '8884',
+        tcpPort:     $('conn-tcpport').value.trim() || '1883',
+        topicPrefix: $('conn-prefix').value.trim()  || 'fw2352'
+      };
+      localStorage.setItem('fw_conn_config', JSON.stringify(c));
+      const st = $('conn-status');
+      st.textContent = '✔ Saved — reconnecting...';
+      st.className = 'tg-status ok';
+      if (client) { try { client.end(true); } catch (_) {} }
+      setTimeout(() => { connectMQTT(); st.textContent = ''; }, 400);
+    }
+    function toggleConnPanel() {
+      const body = $('conn-body'), arrow = $('conn-arrow');
+      arrow.textContent = body.classList.toggle('open') ? '▲' : '▼';
+    }
+    function applyConnConfig() {
+      const c = loadConnConfig();
+      if ($('conn-broker'))  $('conn-broker').value  = c.brokerHost;
+      if ($('conn-wssport')) $('conn-wssport').value = c.wssPort;
+      if ($('conn-tcpport')) $('conn-tcpport').value = c.tcpPort;
+      if ($('conn-prefix'))  $('conn-prefix').value  = c.topicPrefix;
+    }
+    function buildConfig() {
+      const c = loadConnConfig();
+      const pfx = c.topicPrefix;
+      return {
+        brokerWs:       `wss://${c.brokerHost}:${c.wssPort}/mqtt`,
+        topics:         [`${pfx}/gas`, `${pfx}/temp`, `${pfx}/motion`, `${pfx}/status`],
+        cmdMotionTopic: `${pfx}/cmd/motion`,
+        controlTopic:   `${pfx}/control`,
+        brokerHost:     c.brokerHost,
+        wssPort:        c.wssPort
+      };
+    }
+    // Derive initial module-level constants from stored config
+    const _ic             = buildConfig();
+    const TOPICS          = _ic.topics;
+    const CMD_MOTION_TOPIC = _ic.cmdMotionTopic;
+    const CONTROL_TOPIC   = _ic.controlTopic;
 
     // ── Telegram config (persisted in localStorage)
     let tgConfig = JSON.parse(localStorage.getItem('fw_tg_config') || 'null') || { token: '', chatId: '', location: 'FireWatch Building' };
@@ -1471,11 +1556,17 @@
     // ── MQTT Connect
     function connectMQTT() {
       setConnStatus('connecting', 'CONNECTING...');
+      const cfg = buildConfig();
+
+      // Update dynamic labels that show the active broker
+      if ($('stat-broker'))   $('stat-broker').textContent   = cfg.brokerHost;
+      if ($('footer-broker')) $('footer-broker').textContent =
+        `MQTT: ${cfg.brokerHost}:${cfg.wssPort} (WSS)`;
 
       const clientId = 'firewatch_' + Math.random().toString(36).substr(2, 8);
 
       try {
-        client = mqtt.connect(BROKER_WS, {
+        client = mqtt.connect(cfg.brokerWs, {
           clientId,
           keepalive: 60,
           reconnectPeriod: 3000,
@@ -1486,11 +1577,11 @@
         client.on('connect', () => {
           state.connected = true;
           setConnStatus('connected', 'CONNECTED');
-          TOPICS.forEach(t => client.subscribe(t, { qos: 1 }));
+          cfg.topics.forEach(t => client.subscribe(t, { qos: 1 }));
           // Stop demo simulator if it was running
           if (simTimer) { clearInterval(simTimer); simTimer = null; simMode = false; }
-          addLog('SYS', 'Connected to HiveMQ broker', 'safe');
-          addLog('SYS', 'Subscribed: ' + TOPICS.join(', '), 'safe');
+          addLog('SYS', `Connected to ${cfg.brokerHost}`, 'safe');
+          addLog('SYS', 'Subscribed: ' + cfg.topics.join(', '), 'safe');
         });
 
         client.on('message', (topic, message) => {
@@ -1531,10 +1622,11 @@
         value = raw;
       }
 
-      if (topic === 'fw2352/gas') handleGas(value, raw);
-      else if (topic === 'fw2352/temp') handleTemp(value, raw);
-      else if (topic === 'fw2352/motion') handleMotion(value, raw);
-      else if (topic === 'fw2352/status') handleStatus(value, raw);
+      const _pfx = loadConnConfig().topicPrefix;
+      if (topic === _pfx + '/gas') handleGas(value, raw);
+      else if (topic === _pfx + '/temp') handleTemp(value, raw);
+      else if (topic === _pfx + '/motion') handleMotion(value, raw);
+      else if (topic === _pfx + '/status') handleStatus(value, raw);
 
       checkGlobalAlert();
     }
@@ -2158,6 +2250,7 @@ _Connection to FireWatch IoT confirmed._`;
 
     // Start
     connectMQTT();
+    applyConnConfig();   // populate connection panel inputs from localStorage
     setInterval(updateClock, 1000);
     updateClock();
     addLog('SYS', 'FireWatch IoT Dashboard initializing...', 'safe');

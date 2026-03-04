@@ -1,29 +1,87 @@
 /*
- * ================================================
+ * ════════════════════════════════════════════════
  *  FireWatch IoT — ESP8266 Temperature Node
- *  Sensor: DHT11 or DHT22 (GPIO4 / D2)
- *  Topic: fire/temp
- *  Broker: broker.hivemq.com:1883
- * ================================================
- *  Install libraries:
- *    - PubSubClient by Nick O'Leary
+ *  Sensor : DHT11 or DHT22 (GPIO14 / D5)
+ *  Topic  : <prefix>/temp   (prefix set via config portal)
+ *  Broker : configurable — captive portal on first boot
+ * ════════════════════════════════════════════════
+ *  Libraries (Arduino Library Manager):
+ *    - PubSubClient  by Nick O'Leary
  *    - DHT sensor library by Adafruit
  *    - Adafruit Unified Sensor
- * ================================================
+ *    - WiFiManager   by tzapu/tablatronix
+ *    - ArduinoJson   by Benoit Blanchon
+ * ════════════════════════════════════════════════
+ *  First-boot setup:
+ *    1. Power on → AP "FireWatch-Temp" appears
+ *    2. Connect phone/laptop to that AP
+ *    3. Browser opens portal at 192.168.4.1
+ *    4. Enter WiFi SSID/password, MQTT broker host,
+ *       port, and topic prefix → click Save
+ *    5. Device reboots and connects automatically
+ *    6. Config persisted in /fw_config.json on LittleFS
+ * ════════════════════════════════════════════════
  */
 
+#include <ArduinoJson.h>
 #include <DHT.h>
 #include <ESP8266WiFi.h>
+#include <LittleFS.h>
 #include <PubSubClient.h>
+#include <WiFiManager.h>
 
-// ── Config ──
-const char *WIFI_SSID = "Nothing 2a plus";
-const char *WIFI_PASS = "12345678";
-const char *MQTT_BROKER = "broker.hivemq.com";
-const int MQTT_PORT = 1883;
-const char *MQTT_TOPIC =
-    "fw2352/temp"; // Unique prefix avoids topic collision on public broker
+// ── Runtime config (loaded from /fw_config.json on LittleFS) ────────────
+struct FWConfig {
+  char mqtt_broker[64];
+  int  mqtt_port;
+  char topic_prefix[32];
+};
+FWConfig cfg;
+
+// Derived MQTT topics — rebuilt after loadConfig()
+char MQTT_TOPIC[48];
+char MQTT_STATUS_TOPIC[48];
 const char *MQTT_CLIENT = "fw2352_esp8266_temp";
+
+void loadConfig() {
+  if (!LittleFS.begin()) {
+    Serial.println("[CFG] LittleFS mount failed — using defaults");
+  } else {
+    File f = LittleFS.open("/fw_config.json", "r");
+    if (f) {
+      StaticJsonDocument<256> doc;
+      if (!deserializeJson(doc, f)) {
+        strlcpy(cfg.mqtt_broker,  doc["broker"] | "broker.hivemq.com", sizeof(cfg.mqtt_broker));
+        cfg.mqtt_port = doc["port"] | 1883;
+        strlcpy(cfg.topic_prefix, doc["prefix"] | "fw2352",           sizeof(cfg.topic_prefix));
+        snprintf(MQTT_TOPIC,        sizeof(MQTT_TOPIC),        "%s/temp",   cfg.topic_prefix);
+        snprintf(MQTT_STATUS_TOPIC, sizeof(MQTT_STATUS_TOPIC), "%s/status", cfg.topic_prefix);
+        f.close();
+        Serial.printf("[CFG] Loaded: broker=%s  port=%d  prefix=%s\n",
+                      cfg.mqtt_broker, cfg.mqtt_port, cfg.topic_prefix);
+        return;
+      }
+      f.close();
+    }
+  }
+  // Defaults
+  strlcpy(cfg.mqtt_broker,  "broker.hivemq.com", sizeof(cfg.mqtt_broker));
+  cfg.mqtt_port = 1883;
+  strlcpy(cfg.topic_prefix, "fw2352",            sizeof(cfg.topic_prefix));
+  snprintf(MQTT_TOPIC,        sizeof(MQTT_TOPIC),        "%s/temp",   cfg.topic_prefix);
+  snprintf(MQTT_STATUS_TOPIC, sizeof(MQTT_STATUS_TOPIC), "%s/status", cfg.topic_prefix);
+  Serial.println("[CFG] Using defaults.");
+}
+
+void saveConfig() {
+  StaticJsonDocument<256> doc;
+  doc["broker"] = cfg.mqtt_broker;
+  doc["port"]   = cfg.mqtt_port;
+  doc["prefix"] = cfg.topic_prefix;
+  File f = LittleFS.open("/fw_config.json", "w");
+  if (f) { serializeJson(doc, f); f.close(); Serial.println("[CFG] Saved to LittleFS."); }
+  else   { Serial.println("[CFG] ERROR: could not write /fw_config.json"); }
+}
 
 // ── DHT Sensor ──
 #define DHTPIN 14 // GPIO14 = D5 on NodeMCU (changed from D2 — more reliable)
@@ -62,6 +120,27 @@ const unsigned long FORCED_PUB_INTERVAL = 30000; // 30 s heartbeat
 const float TEMP_DELTA_THR = 0.5f;   // °C
 const float HUM_DELTA_THR  = 2.0f;   // %
 
+// ── Offline queue: buffer up to 10 payloads when broker is unreachable ─────
+#define OFFLINE_QUEUE_SIZE 10
+String offlineQueue[OFFLINE_QUEUE_SIZE];
+int    oqHead  = 0;
+int    oqTail  = 0;
+int    oqCount = 0;
+
+void queuePayload(const char *payload) {
+  offlineQueue[oqTail] = payload;
+  oqTail = (oqTail + 1) % OFFLINE_QUEUE_SIZE;
+  if (oqCount < OFFLINE_QUEUE_SIZE) {
+    oqCount++;
+  } else {
+    oqHead = (oqHead + 1) % OFFLINE_QUEUE_SIZE;
+    Serial.println("[Q] Buffer full — oldest entry overwritten");
+  }
+  Serial.printf("[Q] Queued (#%d): %s\n", oqCount, payload);
+}
+
+void flushQueue();
+
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 
@@ -94,9 +173,11 @@ void setup() {
   dht.begin();
   delay(3000); // DHT11 needs at least 2-3s to stabilize after power-on
 
+  // Mount LittleFS and load saved config (or write defaults on first boot)
+  loadConfig();
+  // connectWiFi() launches WiFiManager portal if no credentials are stored
   connectWiFi();
 
-  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setKeepAlive(60);
 
   connectMQTT();
@@ -104,8 +185,12 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED)
-    connectWiFi();
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WiFi] Disconnected — reconnecting...");
+    WiFi.reconnect();
+    unsigned long _t = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - _t < 10000) delay(200);
+  }
   if (!mqttClient.connected())
     connectMQTT();
   mqttClient.loop();
@@ -207,48 +292,87 @@ void readAndPublishTemp() {
            statusStr, rising ? "rising" : "stable",
            alertFlag ? "true" : "false", riskScore);
 
-  if (mqttClient.publish(MQTT_TOPIC, payload, false)) {
-    Serial.printf("[TEMP] Published → %s : %s\n", MQTT_TOPIC, payload);
+  if (mqttClient.connected()) {
+    if (mqttClient.publish(MQTT_TOPIC, payload, false)) {
+      Serial.printf("[TEMP] Published → %s : %s\n", MQTT_TOPIC, payload);
+    } else {
+      Serial.println("[TEMP] Publish FAILED — queuing");
+      queuePayload(payload);
+    }
   } else {
-    Serial.println("[TEMP] Publish FAILED");
+    queuePayload(payload);
   }
+}
+
+// ── Offline queue flush ──────────────────────────────────────────────────
+void flushQueue() {
+  if (oqCount == 0) return;
+  Serial.printf("[Q] Flushing %d buffered payload(s)...\n", oqCount);
+  int flushed = 0;
+  while (oqCount > 0 && mqttClient.connected()) {
+    if (mqttClient.publish(MQTT_TOPIC, offlineQueue[oqHead].c_str(), false)) {
+      flushed++;
+    } else {
+      Serial.println("[Q] Flush publish failed — aborting");
+      break;
+    }
+    oqHead = (oqHead + 1) % OFFLINE_QUEUE_SIZE;
+    oqCount--;
+  }
+  Serial.printf("[Q] Flushed %d payload(s).\n", flushed);
 }
 
 void connectWiFi() {
-  Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // ── WiFiManager captive-portal provisioning ────────────────────────────
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(180);
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
+  WiFiManagerParameter p_broker("broker", "MQTT Broker Host",
+                                 cfg.mqtt_broker,  63);
+  char portBuf[6]; snprintf(portBuf, sizeof(portBuf), "%d", cfg.mqtt_port);
+  WiFiManagerParameter p_port  ("port",   "MQTT Port (TCP)",
+                                 portBuf,           5);
+  WiFiManagerParameter p_prefix("prefix", "Topic Prefix",
+                                 cfg.topic_prefix, 31);
+  wm.addParameter(&p_broker);
+  wm.addParameter(&p_port);
+  wm.addParameter(&p_prefix);
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\n[WiFi] Connected! IP: %s RSSI: %ddBm\n",
-                  WiFi.localIP().toString().c_str(), WiFi.RSSI());
-  } else {
-    Serial.println("\n[WiFi] FAILED — restarting");
+  wm.setSaveParamsCallback([&]() {
+    strlcpy(cfg.mqtt_broker,  p_broker.getValue(), sizeof(cfg.mqtt_broker)  - 1);
+    cfg.mqtt_port = atoi(p_port.getValue());
+    if (cfg.mqtt_port <= 0) cfg.mqtt_port = 1883;
+    strlcpy(cfg.topic_prefix, p_prefix.getValue(), sizeof(cfg.topic_prefix) - 1);
+    snprintf(MQTT_TOPIC,        sizeof(MQTT_TOPIC),        "%s/temp",   cfg.topic_prefix);
+    snprintf(MQTT_STATUS_TOPIC, sizeof(MQTT_STATUS_TOPIC), "%s/status", cfg.topic_prefix);
+    saveConfig();
+  });
+
+  bool connected = wm.autoConnect("FireWatch-Temp");
+  if (!connected) {
+    Serial.println("[WiFi] Portal timeout — restarting...");
     ESP.restart();
   }
+  Serial.printf("[WiFi] Connected! IP: %s  RSSI: %ddBm\n",
+                WiFi.localIP().toString().c_str(), WiFi.RSSI());
 }
 
 void connectMQTT() {
-  // LWT: broker auto-publishes this if ESP8266 disconnects unexpectedly
-  // setWill() does NOT exist in PubSubClient — pass it into connect() instead
-  const char *willTopic = "fw2352/status";
-  const char *willMsg = "{\"node\":\"esp8266_temp\",\"status\":\"offline\"}";
+  // Use live config — picks up any broker change made via the portal
+  mqttClient.setServer(cfg.mqtt_broker, cfg.mqtt_port);
+
+  char willMsg[80];
+  snprintf(willMsg, sizeof(willMsg), "{\"node\":\"esp8266_temp\",\"status\":\"offline\"}");
 
   int attempts = 0;
   while (!mqttClient.connected() && attempts < 5) {
-    Serial.printf("[MQTT] Connecting as %s...\n", MQTT_CLIENT);
-    // connect(id, user, pass, willTopic, willQos, willRetain, willMsg)
-    if (mqttClient.connect(MQTT_CLIENT, nullptr, nullptr, willTopic, 0, false,
-                           willMsg)) {
-      Serial.println("[MQTT] Connected to HiveMQ!");
-      mqttClient.publish("fw2352/status",
+    Serial.printf("[MQTT] Connecting to %s:%d as %s...\n",
+                  cfg.mqtt_broker, cfg.mqtt_port, MQTT_CLIENT);
+    if (mqttClient.connect(MQTT_CLIENT, nullptr, nullptr,
+                           MQTT_STATUS_TOPIC, 0, false, willMsg)) {
+      Serial.println("[MQTT] Connected!");
+      flushQueue();  // publish any payloads buffered while offline
+      mqttClient.publish(MQTT_STATUS_TOPIC,
                          "{\"node\":\"esp8266_temp\",\"status\":\"online\"}");
     } else {
       Serial.printf("[MQTT] Failed rc=%d — retry in 3s\n", mqttClient.state());
