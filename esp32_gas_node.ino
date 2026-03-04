@@ -43,7 +43,7 @@ int gaBufIdx  = 0;
 bool gaBufFull = false;
 
 // ── Edge Computation: Rate-of-Change ─────────────────────────────────────
-int gaPrevSmoothed = 0;                 // MA value from previous publish cycle
+int  gaPrevSmoothed    = -1;           // -1 = not seeded yet (skip ROC on first cycle)
 const int ROC_RISING_THRESHOLD = 20;   // ADC units per cycle ⇒ considered rising
 
 // ── Edge Computation: Delta-based Conditional Publish ────────────────────
@@ -143,9 +143,14 @@ void readAndPublishGas() {
   int riskScore      = (int)map(delta, 0, GAS_SCALE_RANGE, 0, 100);
 
   // ── Step 3: Rate-of-change (per publish cycle ~2 s) ──────────────────
-  int  rateOfChange = smoothed - gaPrevSmoothed;
-  bool rising       = (rateOfChange > ROC_RISING_THRESHOLD);
-  gaPrevSmoothed    = smoothed;
+  int  rateOfChange = 0;
+  bool rising       = false;
+  if (gaPrevSmoothed >= 0) {
+    // Skip ROC on very first cycle — gaPrevSmoothed=0 would give a false RISING spike
+    rateOfChange = smoothed - gaPrevSmoothed;
+    rising       = (rateOfChange > ROC_RISING_THRESHOLD);
+  }
+  gaPrevSmoothed = smoothed;
 
   // ── Step 4: Status classification with early-warn on rising trend ─────
   const char *statusStr;

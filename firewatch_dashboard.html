@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=d evice-width, initial-scale=1.0">
   <title>FireWatch IoT — Real-Time Safety Monitor</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
   <style>
@@ -1542,10 +1542,12 @@
     function handleGas(value, raw) {
       let numVal = 0;
       let forceAlert = false;
-      let forceStatus = null;
       // Edge computation fields from ESP32
       let trend = '—';
       let riskScore = null;
+      // deviceStatus is set when the ESP32 sends a full JSON payload;
+      // we trust it directly instead of re-computing thresholds on the dashboard.
+      let deviceStatus = null;
 
       if (typeof value === 'number') {
         numVal = value;
@@ -1556,18 +1558,20 @@
         else numVal = parseFloat(value) || 0;
       } else if (typeof value === 'object') {
         numVal = value.value || value.ppm || value.adc || 0;
-        // Trust the ESP32's own alert decision — avoids threshold mismatch bugs
-        if (value.alert === true)  forceAlert = true;
-        if (value.alert === false) forceStatus = 'safe';
-        if (value.trend)    trend     = value.trend.toUpperCase();
+        if (value.alert === true) forceAlert = true;
+        // Trust the ESP32's own status string — avoids the alert===false
+        // masking warnings that the device correctly computed on-edge.
+        if (value.status) deviceStatus = value.status.toLowerCase();
+        if (value.trend)  trend        = value.trend.toUpperCase();
         if (value.risk != null) riskScore = value.risk;
       }
 
       let level, statusText, alertFlag = false;
-      if (forceAlert || numVal > 400) {
+      if (forceAlert || deviceStatus === 'leak' || numVal > 400) {
         level = 'danger'; statusText = '⚠ GAS LEAK DETECTED!'; alertFlag = true;
         if (!state.gas.alert) { state.gasAlerts++; $('stat-gas-alerts').textContent = state.gasAlerts; $('stat-gas-alerts').className = 'stat-value alert'; }
-      } else if (!forceAlert && forceStatus !== 'safe' && (numVal > 200 || trend === 'RISING')) {
+      } else if (deviceStatus === 'warning' || (!deviceStatus && (numVal > 200 || trend === 'RISING'))) {
+        // Use device status when available; fall back to threshold for raw scalar payloads
         level = 'warn'; statusText = '⚡ WARNING: Elevated Gas' + (trend === 'RISING' ? ' ↑' : '');
       } else {
         level = 'safe'; statusText = '✔ SAFE — No Gas Detected';
