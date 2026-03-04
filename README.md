@@ -7,12 +7,13 @@
 ## System Architecture
 
 ```
-ESP32  (MQ-2/5 Gas Sensor)    ─── edge: ring-buffer MA, ROC, delta-publish ──┐
+ESP32  (MQ-6 Gas Sensor)      ─── edge: ring-buffer MA, ROC, delta-publish ──┐
 ESP8266 (DHT11 Temp Sensor)   ─── edge: EMA, heat index, ROC, delta-publish ──┼──► broker.hivemq.com:1883 ──► Node-RED
 Pico W  (PIR HC-SR501)        ─── edge: freq window, activity, occupancy ─────┘                              HTML Dashboard
 ```
 
 Each node performs **on-device edge computation** before publishing to MQTT:
+
 - Smoothing (ring-buffer MA / EMA) to remove sensor noise
 - Rate-of-change detection for early fire warning
 - Delta-based conditional publishing to reduce MQTT traffic (~70–80% fewer messages at idle)
@@ -57,9 +58,9 @@ Firewatch_IOT/
 
 | Component      | ESP32 Pin            |
 |----------------|----------------------|
-| MQ-2/5 VCC     | 3.3 V or 5 V         |
-| MQ-2/5 GND     | GND                  |
-| MQ-2/5 A0      | GPIO34 (ADC1_CH6)    |
+| MQ-6 VCC       | 3.3 V or 5 V         |
+| MQ-6 GND       | GND                  |
+| MQ-6 A0        | GPIO34 (ADC1_CH6)    |
 | Buzzer (+)     | GPIO25               |
 | Buzzer (−)     | GND                  |
 | Onboard LED    | GPIO2 (built-in)     |
@@ -123,6 +124,7 @@ mpremote connect list
 ```
 
 Example output when Pico W is detected:
+
 ```
 COM11  MicroPython Board  2E8A:0005  MicroPython  Board in FS mode
 ```
@@ -193,6 +195,7 @@ mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "arm"
 Add via: **File → Preferences → Additional Boards Manager URLs**
 
 Then install:
+
 - **ESP32** — search "esp32" in Boards Manager, install by Espressif (v3.x required for LEDC API)
 - **ESP8266** — search "esp8266", install by ESP8266 Community
 
@@ -251,6 +254,7 @@ Each MQTT input feeds a function node that reads the edge-computed fields:
 | Combine Alert Status | all `*_alert` + `*_risk` flags | — |
 
 The combined alert banner format:
+
 ```
 ⚠ ALERT: [GAS] WARNING: Elevated Gas (risk 48) | [TEMP] HIGH TEMP WARNING (risk 72)  |  COMBINED RISK: 72/100
 ```

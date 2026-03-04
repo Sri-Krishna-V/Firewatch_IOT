@@ -1,7 +1,7 @@
 /*
  * ================================================
  *  FireWatch IoT — ESP32 Gas Detection Node
- *  Sensor: MQ-2 or MQ-5 (analog, GPIO34)
+ *  Sensor: MQ-6 (analog, GPIO34)
  *  Topic: fire/gas
  *  Broker: broker.hivemq.com:1883
  * ================================================
@@ -26,7 +26,7 @@ const int BUZZER_PIN = 25;     // Optional buzzer
 const int BUZZER_CHANNEL = 0;  // LEDC channel for buzzer (ESP32)
 
 // ── Thresholds ── (auto-calibrated at startup — see calibrateBaseline())
-// MQ-2 sensor baseline varies per unit — we measure it during warmup.
+// MQ-6 sensor baseline varies per unit — we measure it during warmup.
 int GAS_BASELINE      = 0;   // set by calibrateBaseline()
 const int GAS_DELTA_WARN  = 65;  // ADC rise above baseline = warning
 const int GAS_DELTA_ALERT = 105; // ADC rise above baseline = gas leak
