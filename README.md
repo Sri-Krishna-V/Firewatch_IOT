@@ -8,7 +8,7 @@
 
 ```
 ESP32  (MQ-6 Gas Sensor)      ─── edge: ring-buffer MA, ROC, delta-publish ──┐
-ESP8266 (DHT11 Temp Sensor)   ─── edge: EMA, heat index, ROC, delta-publish ──┼──► broker.hivemq.com:1883 ──► Node-RED
+ESP8266 (DHT11 Temp Sensor)   ─── edge: EMA, heat index, ROC, delta-publish ──┼──► [configurable broker] ──► Node-RED
 Pico W  (PIR HC-SR501)        ─── edge: freq window, activity, occupancy ─────┘                              HTML Dashboard
 ```
 
@@ -34,21 +34,140 @@ Firewatch_IOT/
 
 ---
 
+## Network-Agnostic Configuration
+
+**No WiFi credentials or broker addresses are hardcoded.** Each device discovers its configuration at runtime:
+
+| Device | How config is stored | How to change |
+|--------|---------------------|---------------|
+| ESP32 | NVS (Preferences, flash) | Re-open captive portal by erasing WiFi creds |
+| ESP8266 | `/fw_config.json` (LittleFS) | Re-open captive portal or reflash with new file |
+| Pico W | `/config.json` (flash) | Edit via `mpremote fs cp` |
+| Dashboard | `localStorage` | ⚙ Connection Config panel in the UI |
+| Node-RED | Environment variables | Set `MQTT_BROKER_HOST` / `MQTT_BROKER_PORT` |
+
+### Arduino Captive Portal (ESP32 + ESP8266)
+
+On **first boot** (or after erasing stored credentials), the device broadcasts a WiFi access point:
+
+| Device | AP Name | Portal address |
+|--------|---------|----------------|
+| ESP32  | `FireWatch-Gas`  | `192.168.4.1` |
+| ESP8266 | `FireWatch-Temp` | `192.168.4.1` |
+
+1. Connect your phone or laptop to the AP
+2. A captive portal page opens automatically (or navigate to `192.168.4.1`)
+3. Enter: **WiFi SSID**, **WiFi Password**, **MQTT Broker Host**, **MQTT Port**, **Topic Prefix**
+4. Click **Save** — the device reboots and connects
+
+Config is persisted across power cycles (NVS on ESP32, LittleFS JSON on ESP8266).  
+The portal re-opens after 3 minutes of inactivity if not submitted.
+
+### Pico W — config.json
+
+`/config.json` is created automatically with defaults on first boot:
+
+```json
+{
+  "wifi_ssid":    "your_wifi_ssid",
+  "wifi_pass":    "your_wifi_password",
+  "mqtt_broker":  "broker.hivemq.com",
+  "mqtt_port":    1883,
+  "topic_prefix": "fw2352"
+}
+```
+
+Edit on your PC and upload:
+
+```powershell
+# 1. Edit config.json locally (it's in the project root)
+# 2. Upload to Pico W flash
+mpremote connect COM11 fs cp config.json :config.json
+
+# 3. Hard-reset to apply
+mpremote connect COM11 reset
+```
+
+To read the live config from the device:
+
+```powershell
+mpremote connect COM11 exec "import ujson; print(open('/config.json').read())"
+```
+
+### Dashboard — Connection Config Panel
+
+Click **🔌 CONNECTION CONFIG** (below the Telegram panel) to expand the settings panel:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| Broker Host / IP | `broker.hivemq.com` | Use `192.168.x.x` for local Mosquitto |
+| WSS Port | `8884` | WebSocket port exposed by broker (local: `9001`) |
+| TCP Port | `1883` | Shown as reference for firmware devices |
+| Topic Prefix | `fw2352` | Must match the prefix set on firmware devices |
+
+Click **💾 SAVE & RECONNECT** — settings persist in `localStorage` and the dashboard reconnects immediately.
+
+### Node-RED — Environment Variables
+
+Set these **before** starting Node-RED so the flow connects to the correct broker:
+
+```powershell
+# Windows (PowerShell) — public HiveMQ
+$env:MQTT_BROKER_HOST = "broker.hivemq.com"
+$env:MQTT_BROKER_PORT = "1883"
+node-red
+
+# Windows — local Mosquitto
+$env:MQTT_BROKER_HOST = "127.0.0.1"
+$env:MQTT_BROKER_PORT = "1883"
+node-red
+```
+
+```bash
+# Linux/macOS
+MQTT_BROKER_HOST=broker.hivemq.com MQTT_BROKER_PORT=1883 node-red
+```
+
+Or add permanently to Node-RED's `settings.js`:
+
+```js
+process.env.MQTT_BROKER_HOST = 'broker.hivemq.com';
+process.env.MQTT_BROKER_PORT = '1883';
+```
+
+### Offline Queue (all firmware nodes)
+
+All three nodes buffer up to **10 MQTT payloads** in memory when the broker is unreachable.  
+The queue is flushed automatically on the next successful reconnect.
+
+```
+[Q] Queued (#1): {"value":487,"raw":2105,...}
+...
+[Q] Flushing 3 buffered payload(s)...
+[Q] Flushed 3/3 payload(s).
+```
+
+If the buffer fills (more than 10 messages while offline), the oldest entry is overwritten — most-recent sensor data is always preserved.
+
+---
+
 ## MQTT Topics
 
-| Topic            | Publisher | QoS | Payload (after edge computation)                                                                 |
-|------------------|-----------|-----|--------------------------------------------------------------------------------------------------|
-| `fw2352/gas`     | ESP32     | 0   | `{"value":487,"raw":2105,"status":"warning","trend":"rising","alert":false,"risk":48}`           |
-| `fw2352/temp`    | ESP8266   | 0   | `{"temperature":36.2,"humidity":61.0,"heat_index":38.5,"status":"elevated","trend":"rising","alert":false,"risk":31}` |
-| `fw2352/motion`  | Pico W    | 0   | `{"motion":true,"count":5,"status":"detected","freq":3,"activity":"moderate","occupied":true,"risk":60}` |
-| `fw2352/status`  | All nodes | 0   | `{"node":"esp32_gas","status":"online"}`                                                         |
-| `fw2352/cmd/motion` | Dashboard | 0 | `"arm"` or `"disarm"`                                                                           |
+Topics use the configured prefix (default `fw2352`):
 
-**Legacy / test payloads also accepted** by the dashboard and Node-RED:
+| Topic              | Publisher | QoS | Payload (after edge computation)                                                                          |
+|--------------------|-----------|-----|----------------------------------------------------------------------------------------------------------|
+| `{prefix}/gas`     | ESP32     | 0   | `{"value":487,"raw":2105,"status":"warning","trend":"rising","alert":false,"risk":48}`                   |
+| `{prefix}/temp`    | ESP8266   | 0   | `{"temperature":36.2,"humidity":61.0,"heat_index":38.5,"status":"elevated","trend":"rising","alert":false,"risk":31}` |
+| `{prefix}/motion`  | Pico W    | 0   | `{"motion":true,"count":5,"status":"detected","freq":3,"activity":"moderate","occupied":true,"risk":60}` |
+| `{prefix}/status`  | All nodes | 0   | `{"node":"esp32_gas","status":"online"}`                                                                 |
+| `{prefix}/cmd/motion` | Dashboard | 0 | `"arm"` or `"disarm"`                                                                                  |
 
-- `fw2352/gas` → `450` or `"leak"` or `"safe"`
-- `fw2352/temp` → `38.5` or `"65"`
-- `fw2352/motion` → `1` or `0` or `"detected"` or `"clear"`
+**Legacy / test payloads also accepted** by dashboard and Node-RED:
+
+- `{prefix}/gas` → `450` or `"leak"` or `"safe"`
+- `{prefix}/temp` → `38.5` or `"65"`
+- `{prefix}/motion` → `1` or `0` or `"detected"` or `"clear"`
 
 ---
 
@@ -70,13 +189,13 @@ Firewatch_IOT/
 
 ### ESP8266 — Temperature
 
-| Component      | NodeMCU Pin          |
-|----------------|----------------------|
-| DHT11 VCC      | 3.3 V                |
-| DHT11 GND      | GND                  |
-| DHT11 DATA     | D5 (GPIO14)          |
-| 10 kΩ pull-up  | DATA → 3.3 V         |
-| Buzzer (+)     | D1 (GPIO5)           |
+| Component      | NodeMCU Pin           |
+|----------------|-----------------------|
+| DHT11 VCC      | 3.3 V                 |
+| DHT11 GND      | GND                   |
+| DHT11 DATA     | D5 (GPIO14)           |
+| 10 kΩ pull-up  | DATA → 3.3 V          |
+| Buzzer (+)     | D1 (GPIO5)            |
 | Onboard LED    | D4 (GPIO2, active LOW)|
 
 > **Edge thresholds (EMA-smoothed, heat-index-aware):**
@@ -100,84 +219,84 @@ Firewatch_IOT/
 
 ### Step 1 — Flash MicroPython firmware
 
-1. **Hold** the BOOTSEL button on the Pico W, then plug the USB cable in, then release.  
-   The board mounts as a USB drive called **RPI-RP2**.
-2. Download the latest Pico W MicroPython `.uf2`:  
-   <https://micropython.org/download/RPI_PICO_W/>
-3. Drag the `.uf2` file onto the **RPI-RP2** drive. The board reboots automatically into MicroPython.
+1. **Hold** BOOTSEL, plug USB in, release — board mounts as **RPI-RP2**
+2. Download Pico W MicroPython `.uf2`: <https://micropython.org/download/RPI_PICO_W/>
+3. Drag `.uf2` onto **RPI-RP2** — board reboots into MicroPython
 
-### Step 2 — Install mpremote (one-time, into the project venv)
+### Step 2 — Install mpremote
 
 ```powershell
-# From the project root — activate the venv first
 & "c:\Users\srikr\Desktop\Studies\Sem 6\CNIC\Firewatch_IOT\.venv\Scripts\Activate.ps1"
-
 pip install mpremote
 ```
 
 ### Step 3 — Find the Pico W COM port
 
-Run this **before** and **after** plugging in the Pico W — the new entry is the Pico:
+```powershell
+mpremote connect list     # before plug-in
+# plug in Pico W
+mpremote connect list     # new entry = Pico W port
+```
+
+Example: `COM11  MicroPython Board  2E8A:0005`
+
+### Step 4 — Install umqtt.simple (one-time)
 
 ```powershell
-mpremote connect list
-```
-
-Example output when Pico W is detected:
-
-```
-COM11  MicroPython Board  2E8A:0005  MicroPython  Board in FS mode
-```
-
-> If the Pico still shows as **RPI-RP2** (mass-storage), MicroPython has not been flashed yet — repeat Step 1.
-
-### Step 4 — Install umqtt.simple on the Pico W (one-time)
-
-```powershell
-# Replace COM11 with your actual port
 mpremote connect COM11 mip install umqtt.simple
 ```
 
-### Step 5 — Deploy the script
+### Step 5 — Create and upload config.json
 
-```powershell
-# Copy script to Pico W flash as main.py (runs on every boot)
-mpremote connect COM11 cp pico_w_motion_main.py :main.py
+Create `config.json` in the project root:
 
-# Soft-reset to start
-mpremote connect COM11 reset
+```json
+{
+  "wifi_ssid":    "YourNetworkName",
+  "wifi_pass":    "YourPassword",
+  "mqtt_broker":  "broker.hivemq.com",
+  "mqtt_port":    1883,
+  "topic_prefix": "fw2352"
+}
 ```
 
-### Step 6 — Monitor serial output
+Upload to Pico W:
+
+```powershell
+mpremote connect COM11 fs cp config.json :config.json
+```
+
+### Step 6 — Deploy the script
+
+```powershell
+# Copy + reset in one command
+mpremote connect COM11 cp pico_w_motion_main.py :main.py + reset
+```
+
+### Step 7 — Monitor serial output
 
 ```powershell
 mpremote connect COM11 repl
 ```
 
-Press **Ctrl-C** inside REPL to interrupt the running script.  
-Press **Ctrl-X** or **Ctrl-]** to exit mpremote.
+Press **Ctrl-C** to interrupt · **Ctrl-X** or **Ctrl-]** to exit mpremote.
 
 ### Re-deploy after edits
 
 ```powershell
-# Copy + immediate reset in one command
 mpremote connect COM11 cp pico_w_motion_main.py :main.py + reset
 ```
 
-### Test run without writing to flash
+### Test run without saving to flash
 
 ```powershell
-# Runs script directly without saving — useful during development
 mpremote connect COM11 run pico_w_motion_main.py
 ```
 
-### Arm / Disarm motion detection via MQTT
+### Arm / Disarm motion detection
 
 ```powershell
-# Disarm — Pico W stops publishing motion events
 mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "disarm"
-
-# Re-arm
 mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "arm"
 ```
 
@@ -192,20 +311,17 @@ mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "arm"
 | ESP32   | `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json` |
 | ESP8266 | `http://arduino.esp8266.com/stable/package_esp8266com_index.json` |
 
-Add via: **File → Preferences → Additional Boards Manager URLs**
-
-Then install:
-
-- **ESP32** — search "esp32" in Boards Manager, install by Espressif (v3.x required for LEDC API)
-- **ESP8266** — search "esp8266", install by ESP8266 Community
+Add via **File → Preferences → Additional Boards Manager URLs**, then install each board package.
 
 ### Required libraries (Library Manager)
 
-| Library | Install name |
-|---------|-------------|
-| MQTT client | `PubSubClient` by Nick O'Leary |
-| DHT sensor (ESP8266 only) | `DHT sensor library` by Adafruit |
-| Adafruit Unified Sensor | `Adafruit Unified Sensor` by Adafruit |
+| Library | Purpose | Boards |
+|---------|---------|--------|
+| `PubSubClient` by Nick O'Leary | MQTT client | Both |
+| `WiFiManager` by tzapu | Captive portal WiFi config | Both |
+| `ArduinoJson` by Benoit Blanchon | Config file parsing | ESP8266 |
+| `DHT sensor library` by Adafruit | DHT11/22 | ESP8266 |
+| `Adafruit Unified Sensor` | Dependency for DHT | ESP8266 |
 
 ### Flash settings
 
@@ -215,7 +331,21 @@ Then install:
 | ESP32 | Upload Speed | `921600` |
 | ESP8266 | Board | `NodeMCU 1.0 (ESP-12E Module)` |
 | ESP8266 | Upload Speed | `115200` |
-| Both | Port | Whichever COM port appears when plugged in |
+| Both | Port | COM port that appears when plugged in |
+
+### First-boot captive portal walkthrough
+
+1. Flash the `.ino` sketch via Arduino IDE
+2. Open Serial Monitor at **115200 baud** — you will see:
+   ```
+   [WiFi] No saved credentials — starting config portal...
+   ```
+3. On your phone: connect to **`FireWatch-Gas`** (ESP32) or **`FireWatch-Temp`** (ESP8266)
+4. Browser auto-opens the portal — fill in all fields and click **Save**
+5. Device reboots and you see `[WiFi] Connected! IP: 192.168.x.x`
+
+To re-run the portal (e.g. to change broker), erase flash from Arduino IDE:  
+**Tools → Erase Flash → All Flash Contents**, then re-upload.
 
 ---
 
@@ -224,50 +354,58 @@ Then install:
 ### Install
 
 ```bash
-# Requires Node.js 18+
 npm install -g --unsafe-perm node-red
-
-# Install dashboard palette
 cd ~/.node-red       # Windows: %USERPROFILE%\.node-red
 npm install node-red-dashboard
+```
 
-# Start Node-RED
+### Set broker env vars, then start
+
+```powershell
+# Windows PowerShell
+$env:MQTT_BROKER_HOST = "broker.hivemq.com"
+$env:MQTT_BROKER_PORT = "1883"
 node-red
+```
+
+```bash
+# Linux / macOS
+MQTT_BROKER_HOST=broker.hivemq.com MQTT_BROKER_PORT=1883 node-red
 ```
 
 ### Import the flow
 
 1. Open <http://localhost:1880>
-2. **☰ Menu → Import → select file** → choose `nodered_flow.json` → **Import**
-3. Click **Deploy** (top-right red button)
+2. **☰ Menu → Import → select file** → `nodered_flow.json` → **Import**
+3. Click **Deploy**
 4. Dashboard: <http://localhost:1880/ui>
 
 ### What the Node-RED flow does
 
-Each MQTT input feeds a function node that reads the edge-computed fields:
-
-| Function node | Reads from payload | Stores in flow context |
-|---------------|-------------------|------------------------|
-| Process Gas | `value`, `trend`, `risk`, `alert` | `gas_value`, `gas_trend`, `gas_risk`, `gas_alert` |
-| Process Temperature | `temperature`, `heat_index`, `trend`, `risk` | `temp_value`, `temp_heat_index`, `temp_trend`, `temp_risk`, `temp_alert` |
-| Process Motion | `motion`, `count`, `freq`, `activity`, `occupied`, `risk` | `motion_count`, `motion_activity`, `motion_occupied`, `motion_risk`, `motion_alert` |
-| Combine Alert Status | all `*_alert` + `*_risk` flags | — |
-
-The combined alert banner format:
-
-```
-⚠ ALERT: [GAS] WARNING: Elevated Gas (risk 48) | [TEMP] HIGH TEMP WARNING (risk 72)  |  COMBINED RISK: 72/100
-```
+| Function node | Reads | Stores in flow context |
+|---------------|-------|----------------------|
+| Process Gas | `value`, `trend`, `risk`, `alert` | `gas_value`, `gas_trend`, `gas_risk` |
+| Process Temperature | `temperature`, `heat_index`, `trend`, `risk` | `temp_value`, `temp_heat_index`, `temp_risk` |
+| Process Motion | `motion`, `count`, `freq`, `activity`, `occupied`, `risk` | `motion_count`, `motion_activity`, `motion_occupied`, `motion_risk` |
+| Combine Alert | all `*_alert` + `*_risk` | Combined risk banner |
 
 ---
 
 ## 4 · Standalone HTML Dashboard
 
-Open `firewatch_dashboard.html` directly in any browser — no server required.
+Open `firewatch_dashboard.html` in any browser — no server required.
 
-Connects to HiveMQ via **WebSocket (WSS port 8884)**.
+Connects to the broker via **WebSocket (WSS)**. HiveMQ public exposes port `8884`; local Mosquitto typically uses `9001`.
 
-### New edge-computation fields displayed
+### Configuring the broker
+
+1. Click **🔌 CONNECTION CONFIG** (collapsible panel below Telegram settings)
+2. Enter broker host, WSS port, and topic prefix
+3. Click **💾 SAVE & RECONNECT**
+
+Settings persist in `localStorage` — survive page refreshes.
+
+### Edge-computation fields displayed
 
 | Card | Edge fields shown |
 |------|------------------|
@@ -283,7 +421,7 @@ Connects to HiveMQ via **WebSocket (WSS port 8884)**.
 
 | Level | Condition |
 |-------|-----------|
-| safe | delta < 65  |
+| safe | delta < 65 |
 | warning | delta ≥ 65 **or** trend = rising |
 | leak | delta ≥ 105 |
 
@@ -292,7 +430,7 @@ Connects to HiveMQ via **WebSocket (WSS port 8884)**.
 | Level | Condition |
 |-------|-----------|
 | normal | EMA < 30 °C |
-| elevated | EMA ≥ 30 °C **or** trend = rising |
+| elevated | EMA ≥ 30 °C |
 | high | heat_index ≥ 38 °C |
 | critical | heat_index ≥ 45 °C |
 
@@ -312,12 +450,11 @@ Occupancy: last detection within **5 minutes** → `occupied: true`
 ## Testing with MQTT CLI
 
 ```bash
-# Windows: install from https://mosquitto.org/download/
-# Linux/macOS:
-sudo apt install mosquitto-clients   # Debian/Ubuntu
-brew install mosquitto               # macOS
+# Install: https://mosquitto.org/download/
+# Linux: sudo apt install mosquitto-clients
+# macOS: brew install mosquitto
 
-# --- Publish test payloads (new format with edge fields) ---
+# --- Full edge-payload test ---
 mosquitto_pub -h broker.hivemq.com -t "fw2352/gas" \
   -m '{"value":512,"raw":2200,"status":"warning","trend":"rising","alert":false,"risk":50}'
 
@@ -327,7 +464,7 @@ mosquitto_pub -h broker.hivemq.com -t "fw2352/temp" \
 mosquitto_pub -h broker.hivemq.com -t "fw2352/motion" \
   -m '{"motion":true,"count":4,"status":"detected","freq":4,"activity":"moderate","occupied":true,"risk":80}'
 
-# --- Simple scalar payloads (also accepted) ---
+# --- Simple scalar payloads ---
 mosquitto_pub -h broker.hivemq.com -t "fw2352/gas"    -m "850"
 mosquitto_pub -h broker.hivemq.com -t "fw2352/temp"   -m "65"
 mosquitto_pub -h broker.hivemq.com -t "fw2352/motion" -m "1"
@@ -335,10 +472,12 @@ mosquitto_pub -h broker.hivemq.com -t "fw2352/motion" -m "1"
 # --- Subscribe to everything ---
 mosquitto_sub -h broker.hivemq.com -t "fw2352/#" -v
 
-# --- Arm / disarm Pico W remotely ---
+# --- Arm / disarm Pico W ---
 mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "disarm"
 mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "arm"
 ```
+
+For a **local Mosquitto** broker, replace `-h broker.hivemq.com` with `-h localhost`.
 
 ---
 
@@ -346,24 +485,32 @@ mosquitto_pub -h broker.hivemq.com -t "fw2352/cmd/motion" -m "arm"
 
 | Issue | Solution |
 |-------|----------|
-| `mpremote: no device found` | Pico W not plugged in, or MicroPython not flashed. Run `mpremote connect list` before and after plugging in to identify the port, then use `mpremote connect COMxx …` explicitly. |
-| Pico W mounts as RPI-RP2 drive | MicroPython not flashed yet — drag the `.uf2` onto the drive. |
-| `mpremote` not found | Activate the venv first: `& ".venv\Scripts\Activate.ps1"` |
-| `umqtt.simple` import error | Run `mpremote connect COMxx mip install umqtt.simple` |
-| MQTT not connecting (Arduino) | Check port 1883 not blocked; device restarts automatically after 5 failed attempts |
-| ESP32 ADC noise | Add 100 nF capacitor between GPIO34 and GND; baseline auto-calibration handles most drift |
+| **ESP32/8266 portal never appears** | Erase flash (Tools → Erase Flash → All Flash Contents) then re-upload |
+| **Portal appears but doesn't save** | Ensure MQTT port field is numeric (default 1883); portal times out after 3 min |
+| **Device connects to WiFi but not MQTT** | Check broker host is reachable on port 1883 from the device's network; try `127.0.0.1` + local Mosquitto |
+| **Pico W ignores new config.json** | Hard-reset after upload: `mpremote connect COMxx reset` |
+| **Pico W WiFi status = -1** | Hotspot must be **2.4 GHz** — Pico W does not support 5 GHz |
+| `mpremote: no device found` | Run `mpremote connect list` before/after plug-in to identify the port |
+| Pico W mounts as RPI-RP2 drive | MicroPython not flashed yet — drag the `.uf2` onto the drive |
+| `mpremote` not found | Activate the venv: `& ".venv\Scripts\Activate.ps1"` |
+| `umqtt.simple` import error | `mpremote connect COMxx mip install umqtt.simple` |
+| **Dashboard shows no data** | Check Connection Config panel — broker host and WSS port must match |
+| **Node-RED can't connect to broker** | Verify env vars are exported before `node-red` starts; check broker host/port |
+| Dashboard shows wrong topics | Topic prefix in Connection Config panel must match prefix on the firmware |
+| Offline queue logged but never flushed | Broker unreachable — check network; queue auto-flushes on next successful connect |
+| ESP32 ADC noise | Add 100 nF cap between GPIO34 and GND; baseline auto-calibration handles drift |
 | DHT11 read fails | Increase warm-up delay to 5 s; verify 10 kΩ pull-up on data line |
-| PIR false triggers | Adjust onboard sensitivity trimmer (CCW = less sensitive); `DEBOUNCE_MS = 500` already set |
+| PIR false triggers | Adjust onboard sensitivity trimmer (CCW = less sensitive); debounce = 500 ms |
 | Node-RED `ui_led` missing | `cd ~/.node-red && npm install node-red-dashboard` |
-| Dashboard shows no data | Check <https://status.hivemq.com>; try refreshing — dashboard auto-reconnects |
 | Heat index not showing | Only computed above 27 °C and ≥ 40 % RH — normal at room temperature |
 
 ---
 
 ## Security Notes
 
-> ⚠️ This project uses **broker.hivemq.com** (public, unauthenticated).  
-> For production deployment, use a **private MQTT broker** with TLS and client certificates.  
+> ⚠️ Default broker is **broker.hivemq.com** (public, unauthenticated).  
+> All config fields (broker host, port, prefix) can be changed at runtime without reflashing.  
+> For production: use a **private MQTT broker** with TLS and client certificates.  
 > Recommended options: EMQX Cloud, AWS IoT Core, or self-hosted Mosquitto with TLS.
 
 ---
